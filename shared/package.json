@@ -4,5 +4,11 @@
   "private": true,
   "description": "Pure game logic shared by the code-racer client and server.",
   "license": "MIT",
-  "type": "module"
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
 }
