@@ -1,0 +1,20 @@
+{
+  "name": "code-racer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A terminal-aesthetic typing racer for code snippets.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "shared"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck -w @code-racer/shared --if-present",
+    "test": "npm run test -w @code-racer/shared --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
