@@ -8,7 +8,7 @@ The project grows in small steps.
 
 - [x] Monorepo scaffold (`shared` workspace, TypeScript)
 - [x] WPM and accuracy calculation
-- [ ] Snippet generator (JavaScript/TypeScript, Python, Go, and others)
+- [x] Snippet generator (JavaScript, TypeScript, Python, Go, and Rust)
 - [ ] Typing engine (per-character correctness, backspace, finish detection)
 - [ ] Single-player race screen
 - [ ] Express server and WebSocket rooms for live multiplayer
@@ -27,7 +27,7 @@ npm test
 
 | Path | Role |
 | --- | --- |
-| `shared/` | Pure TypeScript game logic, shared by the future client and server |
+| `shared/` | Pure TypeScript game logic (stats and snippet selection), shared by the future client and server |
 
 ## License
 
