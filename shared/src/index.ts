@@ -13,3 +13,5 @@ export {
   calculateWpm,
 } from "./stats.js";
 export type { TypingStats } from "./stats.js";
+export { backspace, createTypingState, typeCharacter, typeText } from "./typing.js";
+export type { CharacterCorrectness, TypedCharacter, TypingState } from "./typing.js";

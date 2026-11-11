@@ -5,8 +5,9 @@
  * Only correct characters count, so mistakes do not inflate speed. Accuracy is
  * the share of typed characters that were correct.
  *
- * Callers decide what "correct" and "typed" mean. A later typing engine can
- * pass raw keystrokes, or counts taken after backspaces have been applied.
+ * The typing engine reports both counts from the buffer after backspaces, so
+ * a corrected mistake no longer counts as typed. Callers that track raw
+ * keystrokes themselves can pass those totals instead.
  */
 
 /** Characters that make up one word in the standard WPM formula. */
