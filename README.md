@@ -9,7 +9,7 @@ The project grows in small steps.
 - [x] Monorepo scaffold (`shared` workspace, TypeScript)
 - [x] WPM and accuracy calculation
 - [x] Snippet generator (JavaScript, TypeScript, Python, Go, and Rust)
-- [ ] Typing engine (per-character correctness, backspace, finish detection)
+- [x] Typing engine (per-character correctness, backspace, finish detection)
 - [ ] Single-player race screen
 - [ ] Express server and WebSocket rooms for live multiplayer
 - [ ] Lint, typecheck, and test in GitHub Actions
@@ -27,7 +27,12 @@ npm test
 
 | Path | Role |
 | --- | --- |
-| `shared/` | Pure TypeScript game logic (stats and snippet selection), shared by the future client and server |
+| `shared/` | Pure TypeScript game logic (stats, snippet selection, and the typing engine), shared by the future client and server |
+| `shared/src/typing.ts` | Keystrokes, per-character correctness, cursor, errors, and finish |
+
+## Credit
+
+code-racer is built with AI pair programming. Cursor agents write the increments under Diogo's direction.
 
 ## License
 
