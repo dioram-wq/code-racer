@@ -1,5 +1,7 @@
 # code-racer
 
+[![CI](https://github.com/dioram-wq/code-racer/actions/workflows/ci.yml/badge.svg)](https://github.com/dioram-wq/code-racer/actions/workflows/ci.yml)
+
 Type real code against the clock. code-racer is a TypeRacer-style game with a terminal look: you type generated snippets, and it tracks words per minute and accuracy. The aim is a small, well-tested way to practice typing speed and syntax.
 
 ## Roadmap
@@ -12,7 +14,8 @@ The project grows in small steps.
 - [x] Typing engine (per-character correctness, backspace, finish detection)
 - [ ] Single-player race screen
 - [ ] Express server and WebSocket rooms for live multiplayer
-- [ ] Lint, typecheck, and test in GitHub Actions
+- [x] Typecheck and test in GitHub Actions
+- [ ] Lint in GitHub Actions
 
 ## Develop
 
