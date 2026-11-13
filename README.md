@@ -15,7 +15,7 @@ The project grows in small steps.
 - [ ] Single-player race screen
 - [ ] Express server and WebSocket rooms for live multiplayer
 - [x] Typecheck and test in GitHub Actions
-- [ ] Lint in GitHub Actions
+- [x] Lint in GitHub Actions
 
 ## Develop
 
@@ -24,6 +24,7 @@ Node.js 20 or newer.
 ```bash
 npm install
 npm test
+npm run lint
 ```
 
 ## Layout
