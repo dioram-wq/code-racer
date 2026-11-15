@@ -8,6 +8,17 @@ import {
 } from "@code-racer/shared";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { raceCharacters } from "./race-characters.js";
+import {
+  advanceRaceTiming,
+  createRaceTiming,
+  isRaceClockRunning,
+  liveRaceStats,
+  systemRaceClock,
+  type RaceTiming,
+} from "./race-stats.js";
+
+/** Labels are tenths of a second, so the screen samples the clock at that rate. */
+const RACE_CLOCK_TICK_MS = 100;
 
 function loadSnippet(): Snippet {
   const found = getSnippet("ts-clamp");
@@ -18,6 +29,20 @@ function loadSnippet(): Snippet {
 }
 
 const snippet = loadSnippet();
+
+interface RaceSession {
+  readonly typing: TypingState;
+  readonly timing: RaceTiming;
+  readonly now: number;
+}
+
+function createSession(code: string): RaceSession {
+  return {
+    typing: createTypingState(code),
+    timing: createRaceTiming(),
+    now: 0,
+  };
+}
 
 function isTypingKey(key: string): boolean {
   return key === "Backspace" || key === "Enter" || key === "Tab" || key.length === 1;
@@ -38,11 +63,34 @@ function applyTypingKey(state: TypingState, key: string): TypingState {
 
 export function App() {
   const screenRef = useRef<HTMLElement>(null);
-  const [state, setState] = useState(() => createTypingState(snippet.code));
+  const [session, setSession] = useState(() => createSession(snippet.code));
+  const running = isRaceClockRunning(session.timing);
+  const stats = liveRaceStats(session.timing, session.typing, session.now);
 
   useEffect(() => {
     screenRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (!running) {
+      return;
+    }
+    const id = window.setInterval(() => {
+      setSession((current) => {
+        if (!isRaceClockRunning(current.timing)) {
+          return current;
+        }
+        const stamp = Math.max(current.now, systemRaceClock.now());
+        if (stamp === current.now) {
+          return current;
+        }
+        return { ...current, now: stamp };
+      });
+    }, RACE_CLOCK_TICK_MS);
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [running]);
 
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.metaKey || event.ctrlKey || event.altKey || !isTypingKey(event.key)) {
@@ -50,7 +98,18 @@ export function App() {
     }
     event.preventDefault();
     const key = event.key;
-    setState((current) => applyTypingKey(current, key));
+    setSession((current) => {
+      const typing = applyTypingKey(current.typing, key);
+      if (typing === current.typing) {
+        return current;
+      }
+      const stamp = Math.max(current.now, systemRaceClock.now());
+      return {
+        typing,
+        timing: advanceRaceTiming(current.timing, typing, { now: () => stamp }),
+        now: stamp,
+      };
+    });
   }
 
   return (
@@ -69,8 +128,18 @@ export function App() {
         {" · "}
         {snippet.title}
       </p>
+      <p className="stats">
+        <span className="stat-label">time</span>{" "}
+        <span className="stat-value">{stats.elapsedLabel}</span>
+        {" · "}
+        <span className="stat-label">wpm</span>{" "}
+        <span className="stat-value">{stats.wpmLabel}</span>
+        {" · "}
+        <span className="stat-label">accuracy</span>{" "}
+        <span className="stat-value">{stats.accuracyLabel}</span>
+      </p>
       <pre className="passage" aria-label={snippet.title}>
-        {raceCharacters(state).map((character) =>
+        {raceCharacters(session.typing).map((character) =>
           character.value === "\n" ? (
             <span key={character.index} className={character.className}>
               {character.className === "char-cursor" ? " " : ""}
@@ -83,8 +152,8 @@ export function App() {
           ),
         )}
       </pre>
-      <p className="hint" aria-live="polite">
-        {state.finished ? "passage complete" : "type the snippet"}
+      <p className={stats.resultLabel === null ? "hint" : "hint result"} aria-live="polite">
+        {stats.resultLabel === null ? "type the snippet" : `passage complete · ${stats.resultLabel}`}
       </p>
     </main>
   );
