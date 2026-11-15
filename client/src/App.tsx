@@ -1,20 +1,23 @@
 import {
   backspace,
-  createTypingState,
   getSnippet,
   typeCharacter,
   type Snippet,
   type TypingState,
 } from "@code-racer/shared";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { raceCharacters } from "./race-characters.js";
 import {
+  advancePassage,
+  formatPassageResult,
+  isNextSnippetKey,
+  openPassage,
+} from "./race-passage.js";
+import {
   advanceRaceTiming,
-  createRaceTiming,
   isRaceClockRunning,
   liveRaceStats,
   systemRaceClock,
-  type RaceTiming,
 } from "./race-stats.js";
 
 /** Labels are tenths of a second, so the screen samples the clock at that rate. */
@@ -28,21 +31,7 @@ function loadSnippet(): Snippet {
   return found;
 }
 
-const snippet = loadSnippet();
-
-interface RaceSession {
-  readonly typing: TypingState;
-  readonly timing: RaceTiming;
-  readonly now: number;
-}
-
-function createSession(code: string): RaceSession {
-  return {
-    typing: createTypingState(code),
-    timing: createRaceTiming(),
-    now: 0,
-  };
-}
+const openingSnippet = loadSnippet();
 
 function isTypingKey(key: string): boolean {
   return key === "Backspace" || key === "Enter" || key === "Tab" || key.length === 1;
@@ -63,13 +52,14 @@ function applyTypingKey(state: TypingState, key: string): TypingState {
 
 export function App() {
   const screenRef = useRef<HTMLElement>(null);
-  const [session, setSession] = useState(() => createSession(snippet.code));
+  const [session, setSession] = useState(() => openPassage(openingSnippet));
   const running = isRaceClockRunning(session.timing);
   const stats = liveRaceStats(session.timing, session.typing, session.now);
+  const snippet = session.snippet;
 
   useEffect(() => {
     screenRef.current?.focus();
-  }, []);
+  }, [snippet.id]);
 
   useEffect(() => {
     if (!running) {
@@ -92,8 +82,24 @@ export function App() {
     };
   }, [running]);
 
+  function goToNextSnippet() {
+    setSession((current) => (current.typing.finished ? advancePassage(current) : current));
+  }
+
+  function keepScreenFocus(event: MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
-    if (event.metaKey || event.ctrlKey || event.altKey || !isTypingKey(event.key)) {
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+    if (session.typing.finished && isNextSnippetKey(event.key)) {
+      event.preventDefault();
+      goToNextSnippet();
+      return;
+    }
+    if (!isTypingKey(event.key)) {
       return;
     }
     event.preventDefault();
@@ -105,6 +111,7 @@ export function App() {
       }
       const stamp = Math.max(current.now, systemRaceClock.now());
       return {
+        ...current,
         typing,
         timing: advanceRaceTiming(current.timing, typing, { now: () => stamp }),
         now: stamp,
@@ -138,7 +145,7 @@ export function App() {
         <span className="stat-label">accuracy</span>{" "}
         <span className="stat-value">{stats.accuracyLabel}</span>
       </p>
-      <pre className="passage" aria-label={snippet.title}>
+      <pre key={snippet.id} className="passage" aria-label={snippet.title}>
         {raceCharacters(session.typing).map((character) =>
           character.value === "\n" ? (
             <span key={character.index} className={character.className}>
@@ -152,9 +159,23 @@ export function App() {
           ),
         )}
       </pre>
-      <p className={stats.resultLabel === null ? "hint" : "hint result"} aria-live="polite">
-        {stats.resultLabel === null ? "type the snippet" : `passage complete · ${stats.resultLabel}`}
+      <p className={stats.finished ? "hint result" : "hint"} aria-live="polite">
+        {formatPassageResult(stats.resultLabel)}
       </p>
+      {stats.finished ? (
+        <p className="next-row">
+          <button
+            type="button"
+            className="next"
+            onMouseDown={keepScreenFocus}
+            onClick={goToNextSnippet}
+            aria-keyshortcuts="Enter Tab"
+          >
+            next snippet
+          </button>
+          <span className="hint">enter or tab</span>
+        </p>
+      ) : null}
     </main>
   );
 }

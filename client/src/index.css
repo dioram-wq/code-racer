@@ -111,3 +111,35 @@ body {
 .hint.result {
   color: var(--text);
 }
+
+.next-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0;
+}
+
+.next-row .hint {
+  margin: 0;
+}
+
+.next {
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--amber);
+  font: inherit;
+  cursor: pointer;
+}
+
+.next:hover {
+  background: var(--amber);
+  color: var(--bg);
+}
+
+.next:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 3px;
+}
