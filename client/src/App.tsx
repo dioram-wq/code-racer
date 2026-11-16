@@ -8,11 +8,13 @@ import {
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { raceCharacters } from "./race-characters.js";
 import {
-  advancePassage,
-  formatPassageResult,
-  isNextSnippetKey,
-  openPassage,
-} from "./race-passage.js";
+  advanceLanguagePassage,
+  changeLanguagePassage,
+  RACE_LANGUAGES,
+  type LanguagePassage,
+  type RaceLanguage,
+} from "./race-language.js";
+import { formatPassageResult, isNextSnippetKey, openPassage } from "./race-passage.js";
 import {
   advanceRaceTiming,
   isRaceClockRunning,
@@ -50,9 +52,48 @@ function applyTypingKey(state: TypingState, key: string): TypingState {
   return typeCharacter(state, key);
 }
 
+function keepScreenFocus(event: MouseEvent<HTMLButtonElement>) {
+  event.preventDefault();
+}
+
+function LanguageChoices({
+  language,
+  onChoose,
+}: {
+  language: RaceLanguage;
+  onChoose: (language: RaceLanguage) => void;
+}) {
+  return (
+    <div className="lang-row" role="radiogroup" aria-labelledby="snippet-language-label">
+      <span className="lang-label" id="snippet-language-label">
+        lang
+      </span>
+      {RACE_LANGUAGES.map((choice) => (
+        <button
+          key={choice}
+          type="button"
+          role="radio"
+          aria-checked={choice === language}
+          className="lang-choice"
+          onMouseDown={keepScreenFocus}
+          onClick={() => {
+            onChoose(choice);
+          }}
+        >
+          {choice}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function App() {
   const screenRef = useRef<HTMLElement>(null);
-  const [session, setSession] = useState(() => openPassage(openingSnippet));
+  const [race, setRace] = useState<LanguagePassage>(() => ({
+    language: "typescript",
+    session: openPassage(openingSnippet),
+  }));
+  const { session } = race;
   const running = isRaceClockRunning(session.timing);
   const stats = liveRaceStats(session.timing, session.typing, session.now);
   const snippet = session.snippet;
@@ -66,15 +107,15 @@ export function App() {
       return;
     }
     const id = window.setInterval(() => {
-      setSession((current) => {
-        if (!isRaceClockRunning(current.timing)) {
+      setRace((current) => {
+        if (!isRaceClockRunning(current.session.timing)) {
           return current;
         }
-        const stamp = Math.max(current.now, systemRaceClock.now());
-        if (stamp === current.now) {
+        const stamp = Math.max(current.session.now, systemRaceClock.now());
+        if (stamp === current.session.now) {
           return current;
         }
-        return { ...current, now: stamp };
+        return { ...current, session: { ...current.session, now: stamp } };
       });
     }, RACE_CLOCK_TICK_MS);
     return () => {
@@ -83,14 +124,19 @@ export function App() {
   }, [running]);
 
   function goToNextSnippet() {
-    setSession((current) => (current.typing.finished ? advancePassage(current) : current));
+    setRace((current) =>
+      current.session.typing.finished ? advanceLanguagePassage(current) : current,
+    );
   }
 
-  function keepScreenFocus(event: MouseEvent<HTMLButtonElement>) {
-    event.preventDefault();
+  function chooseLanguage(language: RaceLanguage) {
+    setRace((current) => changeLanguagePassage(current, language));
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
+    if (event.target instanceof HTMLElement && event.target.closest("button") !== null) {
+      return;
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
@@ -104,17 +150,20 @@ export function App() {
     }
     event.preventDefault();
     const key = event.key;
-    setSession((current) => {
-      const typing = applyTypingKey(current.typing, key);
-      if (typing === current.typing) {
+    setRace((current) => {
+      const typing = applyTypingKey(current.session.typing, key);
+      if (typing === current.session.typing) {
         return current;
       }
-      const stamp = Math.max(current.now, systemRaceClock.now());
+      const stamp = Math.max(current.session.now, systemRaceClock.now());
       return {
         ...current,
-        typing,
-        timing: advanceRaceTiming(current.timing, typing, { now: () => stamp }),
-        now: stamp,
+        session: {
+          ...current.session,
+          typing,
+          timing: advanceRaceTiming(current.session.timing, typing, { now: () => stamp }),
+          now: stamp,
+        },
       };
     });
   }
@@ -130,6 +179,7 @@ export function App() {
       <p className="command">
         <span className="prompt">guest@code-racer:~$</span> type {snippet.id}
       </p>
+      <LanguageChoices language={race.language} onChoose={chooseLanguage} />
       <p className="meta">
         <span className="lang">{snippet.language}</span>
         {" · "}
@@ -145,7 +195,11 @@ export function App() {
         <span className="stat-label">accuracy</span>{" "}
         <span className="stat-value">{stats.accuracyLabel}</span>
       </p>
-      <pre key={snippet.id} className="passage" aria-label={snippet.title}>
+      <pre
+        key={snippet.id}
+        className="passage"
+        aria-label={`${snippet.language} · ${snippet.title}`}
+      >
         {raceCharacters(session.typing).map((character) =>
           character.value === "\n" ? (
             <span key={character.index} className={character.className}>

@@ -72,6 +72,46 @@ body {
   color: var(--green);
 }
 
+.lang-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.55rem;
+  margin: 0.85rem 0 0;
+}
+
+.lang-label {
+  color: var(--dim);
+}
+
+.lang-choice {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  cursor: pointer;
+}
+
+.lang-choice[aria-checked="true"] {
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.lang-choice:hover {
+  color: var(--text);
+}
+
+.lang-choice[aria-checked="true"]:hover {
+  color: var(--green);
+}
+
+.lang-choice:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 3px;
+}
+
 .passage {
   margin: 0;
   padding: 1.25rem 1.5rem;
