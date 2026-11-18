@@ -17,7 +17,7 @@ The project grows in small steps.
 - [x] Typecheck and test in GitHub Actions
 - [x] Lint in GitHub Actions
 
-The server scaffold is in place: an Express app with `GET /health`, and an in-memory room registry. WebSocket rooms are the next step.
+The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Starting a race and syncing progress are the next step.
 
 ## Develop
 
@@ -33,16 +33,52 @@ npm start -w @code-racer/server
 
 `npm test` and `npm run typecheck` run in every workspace. The dev script starts the Vite client at <http://localhost:5173>. It starts on a TypeScript snippet, with a language row for JavaScript, TypeScript, Python, Go, Rust, or any. Choosing a language loads a fresh passage from that set and resets the typing state and the clock. Any uses the whole catalog. The screen colors each character as you type, and shows elapsed time, words per minute, and accuracy. The current language is shown next to the snippet title. The clock starts on the first keystroke and stops when the passage is finished. The finished line shows the final words per minute, accuracy, and time. Next snippet, Enter, or Tab loads a different passage in the chosen language and resets the typing state and the clock.
 
-`npm start -w @code-racer/server` listens on port 3001, or on `PORT` when that variable is set. `GET http://localhost:3001/health` returns `{ "ok": true }`. Rooms stay in memory inside that process. Nothing is broadcast over a socket yet.
+`npm start -w @code-racer/server` listens on port 3001, or on `PORT` when that variable is set. `GET http://localhost:3001/health` returns `{ "ok": true }`. A WebSocket on the same port speaks the room protocol below. Rooms stay in memory inside that process.
+
+## Rooms
+
+The socket URL is `ws://localhost:3001` (or whatever `PORT` is). Each message is one JSON object. Room ids are 1 to 16 letters or digits, matched without case, so `ab12` and `AB12` are the same room. A typed id can use any letter or digit, including 0, O, 1, I, and L, which generated room codes leave out. The first join creates the room. Player names are trimmed and must be 1 to 24 characters. The server assigns each connection a player id. A connection is in one room at a time.
+
+A client joins:
+
+```json
+{ "type": "join", "roomId": "ab12", "name": "Ada" }
+```
+
+A client leaves:
+
+```json
+{ "type": "leave" }
+```
+
+Closing the socket leaves the room too. Whenever the player list changes, everyone still in the room receives the list in join order:
+
+```json
+{
+  "type": "players",
+  "roomId": "AB12",
+  "players": [{ "id": "…", "name": "Ada" }]
+}
+```
+
+A message the server cannot apply is answered on that socket only:
+
+```json
+{ "type": "error", "code": "malformed", "message": "Expected JSON" }
+```
+
+`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, or `not-in-room`. `malformed` covers a frame that is not a join or leave object, including binary frames. Starting a race and syncing progress are not part of this protocol yet.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `shared/` | Pure TypeScript game logic (stats, snippet selection, and the typing engine), shared by the client and the server |
+| `shared/` | Pure TypeScript game logic (stats, snippet selection, and the typing engine) and the room message types, shared by the client and the server |
 | `shared/src/typing.ts` | Keystrokes, per-character correctness, cursor, errors, and finish |
-| `server/` | Express app. `createApp()` serves `GET /health`. The start script listens on `PORT` (default 3001) |
-| `server/src/rooms.ts` | In-memory rooms: create a short code, join, leave, and list players. No WebSocket transport yet |
+| `shared/src/room-messages.ts` | JSON room protocol: join, leave, the player-list broadcast, and error codes |
+| `server/` | Express app and WebSocket rooms. `createApp()` serves `GET /health`. The start script listens on `PORT` (default 3001) and attaches the room socket to that HTTP server |
+| `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, and list players |
+| `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, and broadcast the player list |
 | `client/` | React and Vite race screen. Renders a shared snippet with pending, correct, incorrect, and cursor styles, plus a live clock, WPM, and accuracy. A language row filters the catalog. A finished passage shows the result and can load another snippet in the chosen language |
 | `client/src/race-characters.ts` | Maps typing-engine state onto those character styles |
 | `client/src/race-stats.ts` | Starts and stops the race clock, and formats WPM, accuracy, and elapsed time from the shared stats functions |
