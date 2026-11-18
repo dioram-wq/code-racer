@@ -1,8 +1,16 @@
+import {
+  normalizePlayerName,
+  normalizeRoomId,
+  playerNameErrorMessage,
+  roomIdErrorMessage,
+} from "@code-racer/shared";
+
 /**
- * In-memory rooms for a later multiplayer race.
+ * In-memory rooms for a multiplayer race.
  *
- * A room has a short code and the players who have joined, in join order.
- * Codes leave out characters that are easy to mix up when read aloud. This
+ * A room has a code and the players who have joined, in join order. Generated
+ * codes leave out characters that are easy to mix up when read aloud. A caller
+ * can also open a room with a chosen id of 1 to 16 letters or digits. This
  * module does not open a socket or read from the network.
  */
 
@@ -29,6 +37,7 @@ export type RoomRegistryErrorCode =
   | "invalid-player"
   | "invalid-code-length"
   | "invalid-random"
+  | "invalid-code"
   | "room-not-found"
   | "already-joined"
   | "not-in-room"
@@ -60,6 +69,11 @@ export interface RoomRegistry {
   create(player: Player): Room;
   /** Adds `player` to an existing room. Codes are matched without case. */
   join(code: string, player: Player): Room;
+  /**
+   * Adds `player` to the room `code`, creating that room when it is missing.
+   * Codes are matched without case. A supplied code is 1 to 16 letters or digits.
+   */
+  joinOrCreate(code: string, player: Player): Room;
   /**
    * Removes `playerId`. Deletes the room when it becomes empty and returns
    * undefined. Returns the room when other players remain.
@@ -149,6 +163,22 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       return snapshot(room);
     },
 
+    joinOrCreate(code: string, player: Player): Room {
+      const roomId = readSuppliedCode(code);
+      const member = readPlayer(player);
+      assertAvailable(member.id);
+      const existing = rooms.get(roomId);
+      if (existing !== undefined) {
+        existing.players.push(member);
+        roomByPlayer.set(member.id, existing.code);
+        return snapshot(existing);
+      }
+      const room: MutableRoom = { code: roomId, players: [member] };
+      rooms.set(roomId, room);
+      roomByPlayer.set(member.id, room.code);
+      return snapshot(room);
+    },
+
     leave(code: string, playerId: string): Room | undefined {
       const room = requireRoom(code);
       if (typeof playerId !== "string" || playerId.trim() === "") {
@@ -192,14 +222,22 @@ function readPlayer(player: Player): Player {
     throw new RoomRegistryError("invalid-player", "Player id and name must be strings");
   }
   const id = player.id.trim();
-  const name = player.name.trim();
   if (id.length === 0) {
     throw new RoomRegistryError("invalid-player", "Player id must not be empty");
   }
-  if (name.length === 0) {
-    throw new RoomRegistryError("invalid-player", "Player name must not be empty");
+  const name = normalizePlayerName(player.name);
+  if (name === undefined) {
+    throw new RoomRegistryError("invalid-player", playerNameErrorMessage());
   }
   return { id, name };
+}
+
+function readSuppliedCode(code: string): string {
+  const roomId = normalizeRoomId(code);
+  if (roomId === undefined) {
+    throw new RoomRegistryError("invalid-code", roomIdErrorMessage());
+  }
+  return roomId;
 }
 
 function normalizeCode(code: string): string {

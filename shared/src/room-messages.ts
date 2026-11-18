@@ -1,0 +1,155 @@
+/**
+ * JSON messages for a multiplayer room.
+ *
+ * The client sends `join` and `leave`. The server broadcasts `players` to the
+ * sockets still in the room when membership changes, and sends `error` only to
+ * the socket that sent a message it cannot apply. Starting a race and syncing
+ * progress are not part of this protocol.
+ *
+ * Room ids are 1 to 16 letters or digits, matched without case. Typed ids may
+ * use every digit, including characters a generated room code leaves out.
+ * Player names are trimmed and limited so a broadcast stays small.
+ */
+
+/** Longest room id accepted by `normalizeRoomId`, after trimming. */
+export const MAX_ROOM_ID_LENGTH = 16;
+
+/** Longest player name accepted by `normalizePlayerName`, after trimming. */
+export const MAX_PLAYER_NAME_LENGTH = 24;
+
+/** Canonical room id: uppercase letters and digits, within the length cap. */
+export const ROOM_ID_PATTERN = new RegExp(`^[A-Z0-9]{1,${MAX_ROOM_ID_LENGTH}}$`);
+
+/** Client → server. */
+export type ClientRoomMessage = JoinRoomMessage | LeaveRoomMessage;
+
+export interface JoinRoomMessage {
+  readonly type: "join";
+  /** Canonical room id from `normalizeRoomId`. */
+  readonly roomId: string;
+  /** Display name from `normalizePlayerName`. */
+  readonly name: string;
+}
+
+export interface LeaveRoomMessage {
+  readonly type: "leave";
+}
+
+/** One player in a `players` broadcast. The server assigns `id`. */
+export interface RoomPlayer {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** Server → client. */
+export type ServerRoomMessage = PlayersRoomMessage | ErrorRoomMessage;
+
+export interface PlayersRoomMessage {
+  readonly type: "players";
+  readonly roomId: string;
+  readonly players: readonly RoomPlayer[];
+}
+
+export type RoomErrorCode =
+  | "malformed"
+  | "invalid-room"
+  | "invalid-player"
+  | "already-joined"
+  | "not-in-room";
+
+export interface ErrorRoomMessage {
+  readonly type: "error";
+  readonly code: RoomErrorCode;
+  readonly message: string;
+}
+
+export type ParseClientRoomMessageResult =
+  | { readonly ok: true; readonly message: ClientRoomMessage }
+  | { readonly ok: false; readonly error: ErrorRoomMessage };
+
+/** Why a room id was rejected. Shared by the registry and the socket. */
+export function roomIdErrorMessage(): string {
+  return `Room id must be 1 to ${MAX_ROOM_ID_LENGTH} letters or digits`;
+}
+
+/** Why a player name was rejected. Shared by the registry and the socket. */
+export function playerNameErrorMessage(): string {
+  return `Player name must be 1 to ${MAX_PLAYER_NAME_LENGTH} characters`;
+}
+
+/**
+ * Trims and uppercases a room id. Returns undefined when the id is missing
+ * or not 1 to 16 letters or digits.
+ */
+export function normalizeRoomId(roomId: string): string | undefined {
+  if (typeof roomId !== "string") {
+    return undefined;
+  }
+  const normalized = roomId.trim().toUpperCase();
+  if (!ROOM_ID_PATTERN.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+/**
+ * Trims a display name. Returns undefined when it is missing, empty, or
+ * longer than `MAX_PLAYER_NAME_LENGTH`.
+ */
+export function normalizePlayerName(name: string): string | undefined {
+  if (typeof name !== "string") {
+    return undefined;
+  }
+  const trimmed = name.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_PLAYER_NAME_LENGTH) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+/**
+ * Reads one client payload. A successful `join` carries the canonical room
+ * id and the trimmed name. Extra fields are ignored.
+ */
+export function parseClientRoomMessage(raw: string): ParseClientRoomMessageResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return malformed("Expected JSON");
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return malformed("Expected a JSON object");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (record.type === "leave") {
+    return { ok: true, message: { type: "leave" } };
+  }
+  if (record.type !== "join") {
+    return malformed("Expected type join or leave");
+  }
+  if (typeof record.roomId !== "string" || typeof record.name !== "string") {
+    return malformed("Join requires roomId and name strings");
+  }
+
+  const roomId = normalizeRoomId(record.roomId);
+  if (roomId === undefined) {
+    return {
+      ok: false,
+      error: { type: "error", code: "invalid-room", message: roomIdErrorMessage() },
+    };
+  }
+  const name = normalizePlayerName(record.name);
+  if (name === undefined) {
+    return {
+      ok: false,
+      error: { type: "error", code: "invalid-player", message: playerNameErrorMessage() },
+    };
+  }
+  return { ok: true, message: { type: "join", roomId, name } };
+}
+
+function malformed(message: string): ParseClientRoomMessageResult {
+  return { ok: false, error: { type: "error", code: "malformed", message } };
+}
