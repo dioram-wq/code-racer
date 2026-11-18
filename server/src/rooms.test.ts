@@ -206,6 +206,77 @@ describe("join, leave, and listPlayers", () => {
   });
 });
 
+describe("joinOrCreate", () => {
+  it("opens a room with the supplied id and then adds players", () => {
+    const registry = createRoomRegistry();
+    const created = registry.joinOrCreate("  ab12  ", { id: "ada", name: "  Ada  " });
+    const joined = registry.joinOrCreate("AB12", bea);
+
+    expect(created).toEqual({ code: "AB12", players: [{ id: "ada", name: "Ada" }] });
+    expect(joined.players).toEqual([{ id: "ada", name: "Ada" }, bea]);
+    expect(registry.listPlayers("ab12")).toEqual(joined.players);
+  });
+
+  it("joins a room that create already opened", () => {
+    const registry = createRoomRegistry({ random: () => 0 });
+    const room = registry.create(ada);
+
+    expect(registry.joinOrCreate(room.code.toLowerCase(), bea).players).toEqual([ada, bea]);
+  });
+
+  it("rejects an id that is not 1 to 16 letters or digits", () => {
+    const registry = createRoomRegistry();
+
+    for (const code of ["", "   ", "AB-12", "A".repeat(17), "ÄBC", 12 as unknown as string]) {
+      expect(() => registry.joinOrCreate(code, ada)).toThrow(
+        expect.objectContaining({ code: "invalid-code" }),
+      );
+    }
+    expect(registry.joinOrCreate("O0", ada).code).toBe("O0");
+  });
+
+  it("does not keep a player whose room id was rejected", () => {
+    const registry = createRoomRegistry({ random: () => 0 });
+
+    expect(() => registry.joinOrCreate("no-pe", ada)).toThrow(
+      expect.objectContaining({ code: "invalid-code" }),
+    );
+    expect(registry.create(ada).players).toEqual([ada]);
+  });
+
+  it("rejects a name longer than 24 characters", () => {
+    const registry = createRoomRegistry({ random: () => 0 });
+
+    expect(() => registry.create({ id: "ada", name: "a".repeat(25) })).toThrow(
+      expect.objectContaining({ code: "invalid-player" }),
+    );
+    expect(registry.joinOrCreate("AB", { id: "ada", name: `  ${"b".repeat(24)}  ` }).players).toEqual([
+      { id: "ada", name: "b".repeat(24) },
+    ]);
+  });
+
+  it("keeps a player in one room", () => {
+    const registry = createRoomRegistry();
+    registry.joinOrCreate("AAAA", ada);
+
+    expect(() => registry.joinOrCreate("BBBB", ada)).toThrow(
+      expect.objectContaining({ code: "already-joined" }),
+    );
+    expect(registry.listPlayers("AAAA")).toEqual([ada]);
+    expect(() => registry.listPlayers("BBBB")).toThrow(
+      expect.objectContaining({ code: "room-not-found" }),
+    );
+  });
+
+  it("deletes the room when its last player leaves and frees the id", () => {
+    const registry = createRoomRegistry();
+    registry.joinOrCreate("z9", ada);
+
+    expect(registry.leave("Z9", ada.id)).toBeUndefined();
+    expect(registry.joinOrCreate("z9", bea).players).toEqual([bea]);
+  });
+});
+
 /** Values consumed in order. `Math.floor(sample * 32)` picks the alphabet index. */
 function sequence(...samples: number[]): () => number {
   let index = 0;
