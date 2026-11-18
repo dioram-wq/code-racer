@@ -10,7 +10,8 @@
   },
   "workspaces": [
     "shared",
-    "client"
+    "client",
+    "server"
   ],
   "scripts": {
     "lint": "eslint .",
