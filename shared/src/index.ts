@@ -32,7 +32,9 @@ export type {
   LeaveRoomMessage,
   ParseClientRoomMessageResult,
   PlayersRoomMessage,
+  RaceStartRoomMessage,
   RoomErrorCode,
   RoomPlayer,
   ServerRoomMessage,
+  StartRaceMessage,
 } from "./room-messages.js";

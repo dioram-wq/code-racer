@@ -189,7 +189,7 @@ describe("room sockets", () => {
     expect(JSON.parse(await inbox.next())).toEqual({
       type: "error",
       code: "malformed",
-      message: "Expected type join or leave",
+      message: "Expected type join, leave, or start",
     });
 
     socket.send(Buffer.from([0, 1, 2]));

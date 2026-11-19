@@ -64,7 +64,7 @@ describe("parseClientRoomMessage", () => {
     }
     expect(parseClientRoomMessage(JSON.stringify({ type: "wave" }))).toEqual({
       ok: false,
-      error: { type: "error", code: "malformed", message: "Expected type join or leave" },
+      error: { type: "error", code: "malformed", message: "Expected type join, leave, or start" },
     });
     expect(parseClientRoomMessage(JSON.stringify({ type: "join", name: "Ada" }))).toEqual({
       ok: false,

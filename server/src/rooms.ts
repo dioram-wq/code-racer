@@ -1,8 +1,11 @@
 import {
+  isLanguage,
   normalizePlayerName,
   normalizeRoomId,
+  pickSnippet as pickCatalogSnippet,
   playerNameErrorMessage,
   roomIdErrorMessage,
+  type Snippet,
 } from "@code-racer/shared";
 
 /**
@@ -10,8 +13,11 @@ import {
  *
  * A room has a code and the players who have joined, in join order. Generated
  * codes leave out characters that are easy to mix up when read aloud. A caller
- * can also open a room with a chosen id of 1 to 16 letters or digits. This
- * module does not open a socket or read from the network.
+ * can also open a room with a chosen id of 1 to 16 letters or digits. A room
+ * with at least `MIN_RACE_PLAYERS` can start one race: the registry picks a
+ * snippet, stores a countdown, and then reports that race as racing once
+ * `startsAt` is reached. This module does not open a socket or read from the
+ * network.
  */
 
 /** Characters used in room codes. Omits 0, O, 1, I, and L. */
@@ -19,6 +25,12 @@ export const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 /** Length of a code from `create` when the caller does not pass `codeLength`. */
 export const ROOM_CODE_LENGTH = 4;
+
+/** A race will not start with fewer players than this. */
+export const MIN_RACE_PLAYERS = 2;
+
+/** Milliseconds between a successful start and the instant typing begins. */
+export const RACE_COUNTDOWN_MS = 3000;
 
 const MAX_CODE_LENGTH = 8;
 const MAX_ALLOCATION_ATTEMPTS = 32;
@@ -33,6 +45,19 @@ export interface Room {
   readonly players: readonly Player[];
 }
 
+/** Waiting has no race. Countdown and racing both keep the race that started. */
+export type RoomPhase = "waiting" | "countdown" | "racing";
+
+export interface RoomRace {
+  readonly snippet: Snippet;
+  /** Unix time in milliseconds when typing begins. */
+  readonly startsAt: number;
+}
+
+export type RoomRaceState =
+  | { readonly phase: "waiting" }
+  | { readonly phase: "countdown" | "racing"; readonly race: RoomRace };
+
 export type RoomRegistryErrorCode =
   | "invalid-player"
   | "invalid-code-length"
@@ -41,7 +66,11 @@ export type RoomRegistryErrorCode =
   | "room-not-found"
   | "already-joined"
   | "not-in-room"
-  | "code-exhausted";
+  | "code-exhausted"
+  | "not-enough-players"
+  | "race-in-progress"
+  | "invalid-clock"
+  | "invalid-snippet";
 
 /** Failure from creating, joining, leaving, or listing a room. */
 export class RoomRegistryError extends Error {
@@ -62,6 +91,10 @@ export interface CreateRoomRegistryOptions {
   readonly random?: () => number;
   /** Character count of a new room code. Defaults to `ROOM_CODE_LENGTH`. */
   readonly codeLength?: number;
+  /** Passage for `startRace`. Defaults to `pickSnippet` from the shared catalog. */
+  readonly pickSnippet?: () => Snippet;
+  /** Unix time in milliseconds. Defaults to `Date.now`. */
+  readonly now?: () => number;
 }
 
 export interface RoomRegistry {
@@ -81,11 +114,22 @@ export interface RoomRegistry {
   leave(code: string, playerId: string): Room | undefined;
   /** Players currently in the room, in join order. */
   listPlayers(code: string): readonly Player[];
+  /**
+   * Picks a snippet and stores a countdown on the room. Rejects when a race
+   * is already stored or the room has fewer than `MIN_RACE_PLAYERS`.
+   */
+  startRace(code: string): RoomRace;
+  /**
+   * Waiting when no race is stored. Countdown until `startsAt`, then racing.
+   * Both of those phases still hold the race, so `startRace` keeps rejecting.
+   */
+  raceState(code: string): RoomRaceState;
 }
 
 interface MutableRoom {
   code: string;
   players: Player[];
+  race: RoomRace | undefined;
 }
 
 /**
@@ -95,6 +139,8 @@ interface MutableRoom {
 export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomRegistry {
   const random = options?.random ?? Math.random;
   const codeLength = readCodeLength(options?.codeLength ?? ROOM_CODE_LENGTH);
+  const pickSnippet = options?.pickSnippet ?? (() => pickCatalogSnippet());
+  const now = options?.now ?? Date.now;
   const rooms = new Map<string, MutableRoom>();
   const roomByPlayer = new Map<string, string>();
 
@@ -148,7 +194,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       const member = readPlayer(player);
       assertAvailable(member.id);
       const code = allocateCode();
-      const room: MutableRoom = { code, players: [member] };
+      const room: MutableRoom = { code, players: [member], race: undefined };
       rooms.set(code, room);
       roomByPlayer.set(member.id, code);
       return snapshot(room);
@@ -173,7 +219,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
         roomByPlayer.set(member.id, existing.code);
         return snapshot(existing);
       }
-      const room: MutableRoom = { code: roomId, players: [member] };
+      const room: MutableRoom = { code: roomId, players: [member], race: undefined };
       rooms.set(roomId, room);
       roomByPlayer.set(member.id, room.code);
       return snapshot(room);
@@ -200,6 +246,36 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
 
     listPlayers(code: string): readonly Player[] {
       return snapshot(requireRoom(code)).players;
+    },
+
+    startRace(code: string): RoomRace {
+      const room = requireRoom(code);
+      if (room.race !== undefined) {
+        throw new RoomRegistryError(
+          "race-in-progress",
+          "A race has already started in this room",
+        );
+      }
+      if (room.players.length < MIN_RACE_PLAYERS) {
+        throw new RoomRegistryError(
+          "not-enough-players",
+          `A race needs at least ${MIN_RACE_PLAYERS} players`,
+        );
+      }
+      const startsAt = readNow(now) + RACE_COUNTDOWN_MS;
+      const race: RoomRace = { snippet: readSnippet(pickSnippet()), startsAt };
+      room.race = race;
+      return copyRace(race);
+    },
+
+    raceState(code: string): RoomRaceState {
+      const room = requireRoom(code);
+      if (room.race === undefined) {
+        return { phase: "waiting" };
+      }
+      const race = copyRace(room.race);
+      const phase = readNow(now) < race.startsAt ? "countdown" : "racing";
+      return { phase, race };
     },
   };
 }
@@ -264,4 +340,53 @@ function characterAt(index: number): string {
     throw new RoomRegistryError("invalid-random", "Room code index is outside the alphabet");
   }
   return character;
+}
+
+function readNow(now: () => number): number {
+  const value = now();
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new RoomRegistryError("invalid-clock", "now() must return a finite number");
+  }
+  return value;
+}
+
+function readSnippet(value: Snippet): Snippet {
+  if (typeof value !== "object" || value === null) {
+    throw new RoomRegistryError(
+      "invalid-snippet",
+      "Snippet must include id, language, title, and code",
+    );
+  }
+  const id = value.id;
+  const language = value.language;
+  const title = value.title;
+  const code = value.code;
+  if (
+    typeof id !== "string" ||
+    id.length === 0 ||
+    typeof language !== "string" ||
+    !isLanguage(language) ||
+    typeof title !== "string" ||
+    title.trim().length === 0 ||
+    typeof code !== "string" ||
+    code.length === 0
+  ) {
+    throw new RoomRegistryError(
+      "invalid-snippet",
+      "Snippet must include id, language, title, and code",
+    );
+  }
+  return { id, language, title, code };
+}
+
+function copyRace(race: RoomRace): RoomRace {
+  return {
+    snippet: {
+      id: race.snippet.id,
+      language: race.snippet.language,
+      title: race.snippet.title,
+      code: race.snippet.code,
+    },
+    startsAt: race.startsAt,
+  };
 }

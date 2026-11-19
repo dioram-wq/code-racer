@@ -1,15 +1,18 @@
 /**
  * JSON messages for a multiplayer room.
  *
- * The client sends `join` and `leave`. The server broadcasts `players` to the
- * sockets still in the room when membership changes, and sends `error` only to
- * the socket that sent a message it cannot apply. Starting a race and syncing
- * progress are not part of this protocol.
+ * The client sends `join`, `leave`, and `start`. The server broadcasts
+ * `players` to the sockets still in the room when membership changes, and
+ * broadcasts `race-start` (a snippet and the instant typing begins) when a
+ * race is started. It sends `error` only to the socket that sent a message it
+ * cannot apply. Syncing progress is not part of this protocol.
  *
  * Room ids are 1 to 16 letters or digits, matched without case. Typed ids may
  * use every digit, including characters a generated room code leaves out.
  * Player names are trimmed and limited so a broadcast stays small.
  */
+
+import type { Snippet } from "./snippets.js";
 
 /** Longest room id accepted by `normalizeRoomId`, after trimming. */
 export const MAX_ROOM_ID_LENGTH = 16;
@@ -21,7 +24,7 @@ export const MAX_PLAYER_NAME_LENGTH = 24;
 export const ROOM_ID_PATTERN = new RegExp(`^[A-Z0-9]{1,${MAX_ROOM_ID_LENGTH}}$`);
 
 /** Client → server. */
-export type ClientRoomMessage = JoinRoomMessage | LeaveRoomMessage;
+export type ClientRoomMessage = JoinRoomMessage | LeaveRoomMessage | StartRaceMessage;
 
 export interface JoinRoomMessage {
   readonly type: "join";
@@ -35,6 +38,11 @@ export interface LeaveRoomMessage {
   readonly type: "leave";
 }
 
+/** Asks the server to start a race in the socket's current room. */
+export interface StartRaceMessage {
+  readonly type: "start";
+}
+
 /** One player in a `players` broadcast. The server assigns `id`. */
 export interface RoomPlayer {
   readonly id: string;
@@ -42,7 +50,7 @@ export interface RoomPlayer {
 }
 
 /** Server → client. */
-export type ServerRoomMessage = PlayersRoomMessage | ErrorRoomMessage;
+export type ServerRoomMessage = PlayersRoomMessage | RaceStartRoomMessage | ErrorRoomMessage;
 
 export interface PlayersRoomMessage {
   readonly type: "players";
@@ -50,12 +58,25 @@ export interface PlayersRoomMessage {
   readonly players: readonly RoomPlayer[];
 }
 
+/**
+ * Sent to every socket in the room when a race starts.
+ * `startsAt` is Unix time in milliseconds. Typing begins at that instant.
+ */
+export interface RaceStartRoomMessage {
+  readonly type: "race-start";
+  readonly roomId: string;
+  readonly snippet: Snippet;
+  readonly startsAt: number;
+}
+
 export type RoomErrorCode =
   | "malformed"
   | "invalid-room"
   | "invalid-player"
   | "already-joined"
-  | "not-in-room";
+  | "not-in-room"
+  | "not-enough-players"
+  | "race-in-progress";
 
 export interface ErrorRoomMessage {
   readonly type: "error";
@@ -126,8 +147,11 @@ export function parseClientRoomMessage(raw: string): ParseClientRoomMessageResul
   if (record.type === "leave") {
     return { ok: true, message: { type: "leave" } };
   }
+  if (record.type === "start") {
+    return { ok: true, message: { type: "start" } };
+  }
   if (record.type !== "join") {
-    return malformed("Expected type join or leave");
+    return malformed("Expected type join, leave, or start");
   }
   if (typeof record.roomId !== "string" || typeof record.name !== "string") {
     return malformed("Join requires roomId and name strings");
