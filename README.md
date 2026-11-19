@@ -13,11 +13,12 @@ The project grows in small steps.
 - [x] Snippet generator (JavaScript, TypeScript, Python, Go, and Rust)
 - [x] Typing engine (per-character correctness, backspace, finish detection)
 - [x] Single-player race screen (snippet, character styles, live stats, result, next snippet, and language choice)
-- [ ] Express server and WebSocket rooms for live multiplayer
+- [x] Express server and WebSocket rooms (join, leave, player list, and race start)
+- [ ] Sync typing progress during a race
 - [x] Typecheck and test in GitHub Actions
 - [x] Lint in GitHub Actions
 
-The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Starting a race and syncing progress are the next step.
+The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Syncing progress is the next step.
 
 ## Develop
 
@@ -61,13 +62,37 @@ Closing the socket leaves the room too. Whenever the player list changes, everyo
 }
 ```
 
+Any player in the room can start a race. The room is the socket's current room. Extra fields are ignored:
+
+```json
+{ "type": "start" }
+```
+
+The room needs at least two players, and it holds one race at a time. The server picks a snippet from the shared catalog, counts down for three seconds, and broadcasts this to everyone still in the room:
+
+```json
+{
+  "type": "race-start",
+  "roomId": "AB12",
+  "snippet": {
+    "id": "ts-clamp",
+    "language": "typescript",
+    "title": "Clamp a number",
+    "code": "function clamp(value: number, min: number, max: number): number {\n  return Math.min(Math.max(value, min), max);\n}"
+  },
+  "startsAt": 1700000003000
+}
+```
+
+`snippet` is a catalog passage: `id`, `language`, `title`, and the exact `code`. `startsAt` is Unix time in milliseconds. Until that instant the race is counting down. At that instant it is racing. A player who joins after this broadcast does not receive it again.
+
 A message the server cannot apply is answered on that socket only:
 
 ```json
 { "type": "error", "code": "malformed", "message": "Expected JSON" }
 ```
 
-`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, or `not-in-room`. `malformed` covers a frame that is not a join or leave object, including binary frames. Starting a race and syncing progress are not part of this protocol yet.
+`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, `not-in-room`, `not-enough-players`, or `race-in-progress`. `malformed` covers a frame that is not a join, leave, or start object, including binary frames. `not-enough-players` means the room has fewer than two players. `race-in-progress` means this room already has a countdown or a race. Syncing progress is not part of this protocol yet.
 
 ## Layout
 
@@ -75,10 +100,10 @@ A message the server cannot apply is answered on that socket only:
 | --- | --- |
 | `shared/` | Pure TypeScript game logic (stats, snippet selection, and the typing engine) and the room message types, shared by the client and the server |
 | `shared/src/typing.ts` | Keystrokes, per-character correctness, cursor, errors, and finish |
-| `shared/src/room-messages.ts` | JSON room protocol: join, leave, the player-list broadcast, and error codes |
+| `shared/src/room-messages.ts` | JSON room protocol: join, leave, start, the player-list broadcast, the race-start broadcast, and error codes |
 | `server/` | Express app and WebSocket rooms. `createApp()` serves `GET /health`. The start script listens on `PORT` (default 3001) and attaches the room socket to that HTTP server |
-| `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, and list players |
-| `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, and broadcast the player list |
+| `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, list players, and start a race |
+| `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, start a race, and broadcast the player list and race start |
 | `client/` | React and Vite race screen. Renders a shared snippet with pending, correct, incorrect, and cursor styles, plus a live clock, WPM, and accuracy. A language row filters the catalog. A finished passage shows the result and can load another snippet in the chosen language |
 | `client/src/race-characters.ts` | Maps typing-engine state onto those character styles |
 | `client/src/race-stats.ts` | Starts and stops the race clock, and formats WPM, accuracy, and elapsed time from the shared stats functions |
