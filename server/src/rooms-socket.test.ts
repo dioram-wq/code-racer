@@ -1,9 +1,10 @@
 import { createServer, type Server } from "node:http";
+import { getSnippet, type Snippet } from "@code-racer/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { type WebSocketServer } from "ws";
 import { createApp } from "./app.js";
 import { attachRoomServer } from "./rooms-socket.js";
-import { createRoomRegistry, type RoomRegistry } from "./rooms.js";
+import { RACE_COUNTDOWN_MS, createRoomRegistry, type RoomRegistry } from "./rooms.js";
 
 interface Running {
   server: Server;
@@ -258,6 +259,184 @@ describe("room sockets", () => {
     );
   });
 
+  it("broadcasts a race start to the room and not to anyone else", async () => {
+    const chosen = passage("go-sum");
+    const now = 1_700_000_000_000;
+    const running = await start({
+      registry: createRoomRegistry({ now: () => now, pickSnippet: () => chosen }),
+    });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const cam = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    const camInbox = new Inbox(cam);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+    cam.send(json({ type: "join", roomId: "other", name: "Cam" }));
+    await camInbox.next();
+
+    const adaSeesRace = adaInbox.next();
+    const beaSeesRace = beaInbox.next();
+    bea.send(json({ type: "start", language: "rust" }));
+
+    const race = {
+      type: "race-start",
+      roomId: "AB12",
+      snippet: chosen,
+      startsAt: now + RACE_COUNTDOWN_MS,
+    };
+    expect(JSON.parse(await adaSeesRace)).toEqual(race);
+    expect(JSON.parse(await beaSeesRace)).toEqual(race);
+    expect(running.registry.raceState("AB12")).toEqual({
+      phase: "countdown",
+      race: { snippet: chosen, startsAt: race.startsAt },
+    });
+
+    const dee = await connect(running);
+    const deeInbox = new Inbox(dee);
+    const camSeesDee = camInbox.next();
+    dee.send(json({ type: "join", roomId: "OTHER", name: "Dee" }));
+    const others = {
+      type: "players",
+      roomId: "OTHER",
+      players: [
+        { id: "p3", name: "Cam" },
+        { id: "p4", name: "Dee" },
+      ],
+    };
+    expect(JSON.parse(await camSeesDee)).toEqual(others);
+    expect(JSON.parse(await deeInbox.next())).toEqual(others);
+  });
+
+  it("does not replay an in-progress race to a player who joins later", async () => {
+    const running = await start({ registry: fixedRegistry() });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+    const adaSeesRace = adaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaInbox.next();
+
+    const cam = await connect(running);
+    const camInbox = new Inbox(cam);
+    const adaSeesCam = adaInbox.next();
+    const beaSeesCam = beaInbox.next();
+    cam.send(json({ type: "join", roomId: "AB12", name: "Cam" }));
+
+    const players = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "p1", name: "Ada" },
+        { id: "p2", name: "Bea" },
+        { id: "p3", name: "Cam" },
+      ],
+    };
+    expect(JSON.parse(await camInbox.next())).toEqual(players);
+    expect(JSON.parse(await adaSeesCam)).toEqual(players);
+    expect(JSON.parse(await beaSeesCam)).toEqual(players);
+  });
+
+  it("rejects a start when the socket is outside a room or the room has one player", async () => {
+    const running = await start({ registry: fixedRegistry() });
+    const ada = await connect(running);
+    const adaInbox = new Inbox(ada);
+
+    ada.send(json({ type: "start" }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "not-in-room",
+      message: "Not in a room",
+    });
+
+    ada.send(json({ type: "join", roomId: "AB12", name: "Ada" }));
+    await adaInbox.next();
+    ada.send(json({ type: "start" }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "not-enough-players",
+      message: "A race needs at least 2 players",
+    });
+    expect(running.registry.raceState("AB12")).toEqual({ phase: "waiting" });
+  });
+
+  it("rejects a second start without telling the rest of the room", async () => {
+    const running = await start({ registry: fixedRegistry() });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+
+    const adaSeesRace = adaInbox.next();
+    bea.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaInbox.next();
+
+    ada.send(json({ type: "start" }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "race-in-progress",
+      message: "A race has already started in this room",
+    });
+
+    const beaSeesLeave = beaInbox.next();
+    ada.send(json({ type: "leave" }));
+    expect(JSON.parse(await beaSeesLeave)).toEqual({
+      type: "players",
+      roomId: "AB12",
+      players: [{ id: "p2", name: "Bea" }],
+    });
+    expect(running.registry.raceState("AB12").phase).toBe("countdown");
+  });
+
+  it("ignores malformed frames and still starts on a later valid message", async () => {
+    const chosen = passage("js-sum");
+    const now = 50_000;
+    const running = await start({
+      registry: createRoomRegistry({ now: () => now, pickSnippet: () => chosen }),
+    });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+
+    ada.send("not json");
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "malformed",
+      message: "Expected JSON",
+    });
+    ada.send(json({ type: "go" }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "malformed",
+      message: "Expected type join, leave, or start",
+    });
+    ada.send(Buffer.from([9]));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "malformed",
+      message: "Expected a JSON text message",
+    });
+    expect(running.registry.raceState("AB12")).toEqual({ phase: "waiting" });
+
+    const beaSeesRace = beaInbox.next();
+    ada.send(json({ type: "start" }));
+    const race = {
+      type: "race-start",
+      roomId: "AB12",
+      snippet: chosen,
+      startsAt: now + RACE_COUNTDOWN_MS,
+    };
+    expect(JSON.parse(await adaInbox.next())).toEqual(race);
+    expect(JSON.parse(await beaSeesRace)).toEqual(race);
+  });
+
   it("joins a room the registry already created", async () => {
     const registry = createRoomRegistry({ random: () => 0 });
     const room = registry.create({ id: "host", name: "Host" });
@@ -423,4 +602,20 @@ class Inbox {
 
 function json(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function passage(id: string): Snippet {
+  const snippet = getSnippet(id);
+  if (snippet === undefined) {
+    throw new Error(`missing snippet ${id}`);
+  }
+  return snippet;
+}
+
+function fixedRegistry(): RoomRegistry {
+  const chosen = passage("ts-clamp");
+  return createRoomRegistry({
+    now: () => 10_000,
+    pickSnippet: () => chosen,
+  });
 }

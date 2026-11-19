@@ -47,6 +47,15 @@ describe("parseClientRoomMessage", () => {
     });
   });
 
+  it("parses start and ignores extra fields", () => {
+    expect(
+      parseClientRoomMessage(JSON.stringify({ type: "start", roomId: 12, language: "rust" })),
+    ).toEqual({
+      ok: true,
+      message: { type: "start" },
+    });
+  });
+
   it("rejects malformed payloads", () => {
     expect(parseClientRoomMessage("")).toEqual({
       ok: false,

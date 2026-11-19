@@ -1,10 +1,14 @@
+import { getSnippet, type Snippet } from "@code-racer/shared";
 import { describe, expect, it } from "vitest";
 import {
+  MIN_RACE_PLAYERS,
+  RACE_COUNTDOWN_MS,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   type Player,
   RoomRegistryError,
   createRoomRegistry,
+  type RoomRegistry,
 } from "./rooms.js";
 
 const ada: Player = { id: "ada", name: "Ada" };
@@ -276,6 +280,180 @@ describe("joinOrCreate", () => {
     expect(registry.joinOrCreate("z9", bea).players).toEqual([bea]);
   });
 });
+
+describe("startRace", () => {
+  const chosen = passage("js-sum");
+
+  it("stores a countdown and returns the catalog snippet", () => {
+    const startedAt = 1_700_000_000_000;
+    const registry = createRoomRegistry({
+      now: () => startedAt,
+      pickSnippet: () => chosen,
+    });
+    const code = twoPlayers(registry);
+
+    const race = registry.startRace(`  ${code.toLowerCase()}  `);
+
+    expect(MIN_RACE_PLAYERS).toBe(2);
+    expect(race).toEqual({ snippet: chosen, startsAt: startedAt + RACE_COUNTDOWN_MS });
+    expect(registry.raceState(code)).toEqual({ phase: "countdown", race });
+    expect(registry.listPlayers(code)).toEqual([ada, bea]);
+  });
+
+  it("uses the shared catalog and the real clock when neither is injected", () => {
+    const registry = createRoomRegistry();
+    const code = twoPlayers(registry);
+    const before = Date.now();
+    const race = registry.startRace(code);
+    const after = Date.now();
+
+    expect(getSnippet(race.snippet.id)).toEqual(race.snippet);
+    expect(race.startsAt).toBeGreaterThanOrEqual(before + RACE_COUNTDOWN_MS);
+    expect(race.startsAt).toBeLessThanOrEqual(after + RACE_COUNTDOWN_MS);
+    expect(registry.raceState(code).phase).toBe("countdown");
+  });
+
+  it("becomes racing at the start time and still rejects another start", () => {
+    let time = 5_000;
+    const registry = createRoomRegistry({
+      now: () => time,
+      pickSnippet: () => chosen,
+    });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+
+    expect(registry.raceState(code).phase).toBe("countdown");
+    time = 5_000 + RACE_COUNTDOWN_MS - 1;
+    expect(registry.raceState(code).phase).toBe("countdown");
+    expect(() => registry.startRace(code)).toThrow(
+      expect.objectContaining({
+        code: "race-in-progress",
+        message: "A race has already started in this room",
+      }),
+    );
+
+    time = 5_000 + RACE_COUNTDOWN_MS;
+    expect(registry.raceState(code).phase).toBe("racing");
+    expect(() => registry.startRace(code)).toThrow(
+      expect.objectContaining({ code: "race-in-progress" }),
+    );
+  });
+
+  it("rejects a room with fewer than two players and leaves it waiting", () => {
+    const registry = createRoomRegistry({ now: () => 0, pickSnippet: () => chosen });
+    const code = registry.joinOrCreate("AB12", ada).code;
+
+    expect(() => registry.startRace(code)).toThrow(
+      expect.objectContaining({
+        code: "not-enough-players",
+        message: `A race needs at least ${MIN_RACE_PLAYERS} players`,
+      }),
+    );
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+  });
+
+  it("keeps a race that already started after the room drops below two players", () => {
+    const registry = createRoomRegistry({ now: () => 0, pickSnippet: () => chosen });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    registry.leave(code, bea.id);
+
+    expect(() => registry.startRace(code)).toThrow(
+      expect.objectContaining({ code: "race-in-progress" }),
+    );
+    expect(registry.raceState(code).phase).toBe("countdown");
+    expect(registry.listPlayers(code)).toEqual([ada]);
+  });
+
+  it("drops the race when the room is deleted and allows a new one on the same id", () => {
+    const registry = createRoomRegistry({ now: () => 20, pickSnippet: () => chosen });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    registry.leave(code, ada.id);
+    expect(registry.leave(code, bea.id)).toBeUndefined();
+    expect(() => registry.raceState(code)).toThrow(
+      expect.objectContaining({ code: "room-not-found" }),
+    );
+
+    twoPlayers(registry);
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+    expect(registry.startRace(code).snippet).toEqual(chosen);
+  });
+
+  it("does not let a caller change the stored snippet", () => {
+    const registry = createRoomRegistry({ now: () => 0, pickSnippet: () => chosen });
+    const code = twoPlayers(registry);
+    const race = registry.startRace(code);
+    (race.snippet as { title: string }).title = "Changed";
+
+    const state = registry.raceState(code);
+    if (state.phase === "waiting") {
+      throw new Error("expected the race to be stored");
+    }
+    expect(state.race.snippet).toEqual(chosen);
+  });
+
+  it("does not store a race when the clock or the snippet is unusable", () => {
+    const nanClock = createRoomRegistry({ now: () => Number.NaN, pickSnippet: () => chosen });
+    twoPlayers(nanClock);
+    expect(() => nanClock.startRace("AB12")).toThrow(
+      expect.objectContaining({ code: "invalid-clock" }),
+    );
+    expect(nanClock.raceState("AB12")).toEqual({ phase: "waiting" });
+
+    const infiniteClock = createRoomRegistry({
+      now: () => Number.POSITIVE_INFINITY,
+      pickSnippet: () => chosen,
+    });
+    twoPlayers(infiniteClock);
+    expect(() => infiniteClock.startRace("AB12")).toThrow(
+      expect.objectContaining({ code: "invalid-clock" }),
+    );
+    expect(infiniteClock.raceState("AB12")).toEqual({ phase: "waiting" });
+
+    const blank = createRoomRegistry({
+      now: () => 1,
+      pickSnippet: () => ({ ...chosen, id: "" }),
+    });
+    twoPlayers(blank);
+    expect(() => blank.startRace("AB12")).toThrow(
+      expect.objectContaining({ code: "invalid-snippet" }),
+    );
+    expect(blank.raceState("AB12")).toEqual({ phase: "waiting" });
+
+    const unknownLanguage = createRoomRegistry({
+      now: () => 1,
+      pickSnippet: () => ({ ...chosen, language: "ruby" as Snippet["language"] }),
+    });
+    twoPlayers(unknownLanguage);
+    expect(() => unknownLanguage.startRace("AB12")).toThrow(
+      expect.objectContaining({ code: "invalid-snippet" }),
+    );
+  });
+
+  it("reports a missing room", () => {
+    const registry = createRoomRegistry();
+
+    expect(() => registry.startRace("missing")).toThrow(
+      expect.objectContaining({ code: "room-not-found" }),
+    );
+    expect(() => registry.raceState("missing")).toThrow(RoomRegistryError);
+  });
+});
+
+function passage(id: string): Snippet {
+  const snippet = getSnippet(id);
+  if (snippet === undefined) {
+    throw new Error(`missing snippet ${id}`);
+  }
+  return snippet;
+}
+
+function twoPlayers(registry: RoomRegistry): string {
+  const room = registry.joinOrCreate("AB12", ada);
+  registry.join(room.code, bea);
+  return room.code;
+}
 
 /** Values consumed in order. `Math.floor(sample * 32)` picks the alphabet index. */
 function sequence(...samples: number[]): () => number {
