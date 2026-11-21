@@ -441,6 +441,158 @@ describe("startRace", () => {
   });
 });
 
+describe("reportProgress", () => {
+  const snippet = passage("js-sum");
+
+  it("records a forward position while racing and finishes at the end", () => {
+    let time = 1_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    time = 1_000 + RACE_COUNTDOWN_MS;
+
+    expect(registry.reportProgress(`  ${code.toLowerCase()}  `, "  ada  ", 0)).toEqual({
+      playerId: "ada",
+      position: 0,
+      finished: false,
+    });
+    expect(registry.reportProgress(code, ada.id, 4)).toEqual({
+      playerId: "ada",
+      position: 4,
+      finished: false,
+    });
+    expect(registry.reportProgress(code, bea.id, snippet.code.length)).toEqual({
+      playerId: "bea",
+      position: snippet.code.length,
+      finished: true,
+    });
+    expect(registry.reportProgress(code, ada.id, snippet.code.length)).toEqual({
+      playerId: "ada",
+      position: snippet.code.length,
+      finished: true,
+    });
+    expect(registry.reportProgress(code, ada.id, snippet.code.length).finished).toBe(true);
+  });
+
+  it("rejects progress while the room is waiting or counting down", () => {
+    let time = 1_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+
+    expect(() => registry.reportProgress(code, ada.id, 1)).toThrow(
+      expect.objectContaining({
+        code: "race-not-running",
+        message: "No race is running in this room",
+      }),
+    );
+
+    registry.startRace(code);
+    expect(registry.raceState(code).phase).toBe("countdown");
+    expect(() => registry.reportProgress(code, ada.id, 1)).toThrow(
+      expect.objectContaining({ code: "race-not-running" }),
+    );
+    time = 1_000 + RACE_COUNTDOWN_MS - 1;
+    expect(() => registry.reportProgress(code, ada.id, 3)).toThrow(
+      expect.objectContaining({ code: "race-not-running" }),
+    );
+
+    time = 1_000 + RACE_COUNTDOWN_MS;
+    expect(registry.reportProgress(code, ada.id, 2)).toEqual({
+      playerId: "ada",
+      position: 2,
+      finished: false,
+    });
+  });
+
+  it("rejects a position past the snippet or behind the last report", () => {
+    let time = 1_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    time = 1_000 + RACE_COUNTDOWN_MS;
+
+    expect(() => registry.reportProgress(code, ada.id, snippet.code.length + 1)).toThrow(
+      expect.objectContaining({
+        code: "invalid-progress",
+        message: "Progress is past the end of the snippet",
+      }),
+    );
+    expect(registry.reportProgress(code, ada.id, 5).position).toBe(5);
+    expect(() => registry.reportProgress(code, ada.id, 4)).toThrow(
+      expect.objectContaining({
+        code: "invalid-progress",
+        message: "Progress cannot move backward",
+      }),
+    );
+    expect(() => registry.reportProgress(code, ada.id, 1.5)).toThrow(
+      expect.objectContaining({
+        code: "invalid-progress",
+        message: "Progress must be a non-negative integer",
+      }),
+    );
+    expect(() => registry.reportProgress(code, ada.id, -1)).toThrow(
+      expect.objectContaining({
+        code: "invalid-progress",
+        message: "Progress must be a non-negative integer",
+      }),
+    );
+    expect(() => registry.reportProgress(code, ada.id, "3" as unknown as number)).toThrow(
+      expect.objectContaining({ code: "invalid-progress" }),
+    );
+    expect(registry.reportProgress(code, ada.id, 6)).toEqual({
+      playerId: "ada",
+      position: 6,
+      finished: false,
+    });
+    expect(registry.reportProgress(code, bea.id, 1).position).toBe(1);
+  });
+
+  it("rejects a missing room or a player who is not in it", () => {
+    const registry = createRoomRegistry({ now: () => 0, pickSnippet: () => snippet });
+
+    expect(() => registry.reportProgress("missing", ada.id, 1)).toThrow(
+      expect.objectContaining({ code: "room-not-found" }),
+    );
+
+    const code = registry.joinOrCreate("AB12", ada).code;
+    expect(() => registry.reportProgress(code, bea.id, 0)).toThrow(
+      expect.objectContaining({
+        code: "not-in-room",
+        message: "Player bea is not in room AB12",
+      }),
+    );
+    expect(() => registry.reportProgress(code, " ", 0)).toThrow(
+      expect.objectContaining({
+        code: "not-in-room",
+        message: "Player is not in room AB12",
+      }),
+    );
+  });
+
+  it("forgets progress when the player leaves and lets them start again", () => {
+    let time = 8_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    time = 8_000 + RACE_COUNTDOWN_MS;
+    registry.reportProgress(code, ada.id, snippet.code.length);
+
+    registry.leave(code, ada.id);
+    expect(registry.reportProgress(code, bea.id, 2)).toEqual({
+      playerId: "bea",
+      position: 2,
+      finished: false,
+    });
+
+    registry.join(code, ada);
+    expect(registry.reportProgress(code, ada.id, 1)).toEqual({
+      playerId: "ada",
+      position: 1,
+      finished: false,
+    });
+  });
+});
+
 function passage(id: string): Snippet {
   const snippet = getSnippet(id);
   if (snippet === undefined) {

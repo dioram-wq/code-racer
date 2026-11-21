@@ -56,6 +56,45 @@ describe("parseClientRoomMessage", () => {
     });
   });
 
+  it("parses progress and ignores extra fields", () => {
+    expect(
+      parseClientRoomMessage(JSON.stringify({ type: "progress", position: 12, roomId: "AB" })),
+    ).toEqual({
+      ok: true,
+      message: { type: "progress", position: 12 },
+    });
+    expect(parseClientRoomMessage(JSON.stringify({ type: "progress", position: 0 }))).toEqual({
+      ok: true,
+      message: { type: "progress", position: 0 },
+    });
+    expect(
+      parseClientRoomMessage(
+        JSON.stringify({ type: "progress", position: Number.MAX_SAFE_INTEGER }),
+      ),
+    ).toEqual({
+      ok: true,
+      message: { type: "progress", position: Number.MAX_SAFE_INTEGER },
+    });
+  });
+
+  it("rejects a progress position that is not a non-negative integer", () => {
+    const error = {
+      type: "error",
+      code: "malformed",
+      message: "Progress requires a non-negative integer position",
+    };
+    for (const position of [-1, 1.5, "4", null, true, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(parseClientRoomMessage(JSON.stringify({ type: "progress", position }))).toEqual({
+        ok: false,
+        error,
+      });
+    }
+    expect(parseClientRoomMessage(JSON.stringify({ type: "progress" }))).toEqual({
+      ok: false,
+      error,
+    });
+  });
+
   it("rejects malformed payloads", () => {
     expect(parseClientRoomMessage("")).toEqual({
       ok: false,

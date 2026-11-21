@@ -437,6 +437,209 @@ describe("room sockets", () => {
     expect(JSON.parse(await beaSeesRace)).toEqual(race);
   });
 
+  it("broadcasts progress to the room and marks a player finished at the end", async () => {
+    const clock = clockedRace();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const cam = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    const camInbox = new Inbox(cam);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+    cam.send(json({ type: "join", roomId: "other", name: "Cam" }));
+    await camInbox.next();
+
+    const adaSeesRace = adaInbox.next();
+    const beaSeesRace = beaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaSeesRace;
+    clock.startTyping();
+
+    const adaSeesProgress = adaInbox.next();
+    const beaSeesProgress = beaInbox.next();
+    ada.send(json({ type: "progress", position: 4, extra: true }));
+    const typed = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: 4,
+      finished: false,
+    };
+    expect(JSON.parse(await adaSeesProgress)).toEqual(typed);
+    expect(JSON.parse(await beaSeesProgress)).toEqual(typed);
+
+    const adaSeesFinish = adaInbox.next();
+    const beaSeesFinish = beaInbox.next();
+    bea.send(json({ type: "progress", position: clock.snippet.code.length }));
+    const finished = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p2",
+      position: clock.snippet.code.length,
+      finished: true,
+    };
+    expect(JSON.parse(await adaSeesFinish)).toEqual(finished);
+    expect(JSON.parse(await beaSeesFinish)).toEqual(finished);
+
+    const dee = await connect(running);
+    const deeInbox = new Inbox(dee);
+    const camSeesDee = camInbox.next();
+    dee.send(json({ type: "join", roomId: "OTHER", name: "Dee" }));
+    expect(JSON.parse(await camSeesDee)).toEqual({
+      type: "players",
+      roomId: "OTHER",
+      players: [
+        { id: "p3", name: "Cam" },
+        { id: "p4", name: "Dee" },
+      ],
+    });
+    await deeInbox.next();
+  });
+
+  it("rejects progress when no race is running", async () => {
+    const clock = clockedRace();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const adaInbox = new Inbox(ada);
+
+    ada.send(json({ type: "progress", position: 1 }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "not-in-room",
+      message: "Not in a room",
+    });
+
+    ada.send(json({ type: "join", roomId: "AB12", name: "Ada" }));
+    await adaInbox.next();
+    ada.send(json({ type: "progress", position: 1 }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "race-not-running",
+      message: "No race is running in this room",
+    });
+
+    const bea = await connect(running);
+    const beaInbox = new Inbox(bea);
+    const adaSeesBea = adaInbox.next();
+    bea.send(json({ type: "join", roomId: "AB12", name: "Bea" }));
+    await adaSeesBea;
+    await beaInbox.next();
+
+    const adaSeesRace = adaInbox.next();
+    bea.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaInbox.next();
+    expect(running.registry.raceState("AB12").phase).toBe("countdown");
+
+    ada.send(json({ type: "progress", position: 5 }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "race-not-running",
+      message: "No race is running in this room",
+    });
+
+    clock.startTyping();
+    const beaSeesProgress = beaInbox.next();
+    ada.send(json({ type: "progress", position: 2 }));
+    const progress = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: 2,
+      finished: false,
+    };
+    expect(JSON.parse(await adaInbox.next())).toEqual(progress);
+    expect(JSON.parse(await beaSeesProgress)).toEqual(progress);
+  });
+
+  it("rejects a malformed progress frame", async () => {
+    const clock = clockedRace();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+    const adaSeesRace = adaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaInbox.next();
+    clock.startTyping();
+
+    const error = {
+      type: "error",
+      code: "malformed",
+      message: "Progress requires a non-negative integer position",
+    };
+    for (const position of [-1, 1.5, "4", null, true]) {
+      ada.send(json({ type: "progress", position }));
+      expect(JSON.parse(await adaInbox.next())).toEqual(error);
+    }
+    ada.send(json({ type: "progress" }));
+    expect(JSON.parse(await adaInbox.next())).toEqual(error);
+
+    const beaSeesProgress = beaInbox.next();
+    ada.send(json({ type: "progress", position: 3 }));
+    const progress = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: 3,
+      finished: false,
+    };
+    expect(JSON.parse(await adaInbox.next())).toEqual(progress);
+    expect(JSON.parse(await beaSeesProgress)).toEqual(progress);
+  });
+
+  it("rejects a progress position past the snippet or behind the last report", async () => {
+    const clock = clockedRace();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+    const adaSeesRace = adaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaInbox.next();
+    clock.startTyping();
+
+    ada.send(json({ type: "progress", position: clock.snippet.code.length + 1 }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "invalid-progress",
+      message: "Progress is past the end of the snippet",
+    });
+
+    const adaSeesProgress = adaInbox.next();
+    const beaSeesProgress = beaInbox.next();
+    ada.send(json({ type: "progress", position: 4 }));
+    const typed = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: 4,
+      finished: false,
+    };
+    expect(JSON.parse(await adaSeesProgress)).toEqual(typed);
+    expect(JSON.parse(await beaSeesProgress)).toEqual(typed);
+
+    ada.send(json({ type: "progress", position: 2 }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "error",
+      code: "invalid-progress",
+      message: "Progress cannot move backward",
+    });
+
+    const beaSeesRepeat = beaInbox.next();
+    ada.send(json({ type: "progress", position: 4 }));
+    expect(JSON.parse(await adaInbox.next())).toEqual(typed);
+    expect(JSON.parse(await beaSeesRepeat)).toEqual(typed);
+  });
+
   it("joins a room the registry already created", async () => {
     const registry = createRoomRegistry({ random: () => 0 });
     const room = registry.create({ id: "host", name: "Host" });
@@ -618,4 +821,27 @@ function fixedRegistry(): RoomRegistry {
     now: () => 10_000,
     pickSnippet: () => chosen,
   });
+}
+
+interface ClockedRace {
+  registry: RoomRegistry;
+  snippet: Snippet;
+  /** Moves the clock from the countdown to the instant typing begins. */
+  startTyping: () => void;
+}
+
+function clockedRace(): ClockedRace {
+  const snippet = passage("js-sum");
+  let time = 20_000;
+  const registry = createRoomRegistry({
+    now: () => time,
+    pickSnippet: () => snippet,
+  });
+  return {
+    registry,
+    snippet,
+    startTyping() {
+      time = 20_000 + RACE_COUNTDOWN_MS;
+    },
+  };
 }
