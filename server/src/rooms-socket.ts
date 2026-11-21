@@ -4,6 +4,7 @@ import {
   parseClientRoomMessage,
   type ErrorRoomMessage,
   type PlayersRoomMessage,
+  type ProgressRoomMessage,
   type RaceStartRoomMessage,
   type ServerRoomMessage,
 } from "@code-racer/shared";
@@ -12,6 +13,7 @@ import {
   RoomRegistryError,
   createRoomRegistry,
   type Player,
+  type PlayerProgress,
   type RoomRace,
   type RoomRegistry,
 } from "./rooms.js";
@@ -20,20 +22,22 @@ import {
  * WebSocket rooms on the HTTP server.
  *
  * A client joins with `{ "type": "join", "roomId", "name" }`, leaves with
- * `{ "type": "leave" }`, and starts a race with `{ "type": "start" }`. Closing
- * the socket leaves too. The first join for an id creates the room in the
+ * `{ "type": "leave" }`, starts a race with `{ "type": "start" }`, and reports
+ * a character position with `{ "type": "progress", "position" }`. Closing the
+ * socket leaves too. The first join for an id creates the room in the
  * in-memory registry. Every membership change is broadcast as
  * `{ "type": "players", "roomId", "players" }` to the sockets still in that
  * room, in join order. A successful start picks a snippet, stores a countdown
  * on the room, and broadcasts `{ "type": "race-start", "roomId", "snippet",
- * "startsAt" }` to those same sockets. A message that cannot be applied is
- * answered with `{ "type": "error", "code", "message" }` on that socket only.
+ * "startsAt" }` to those same sockets. A progress report is accepted only
+ * while that race is running, and the accepted position is broadcast to the
+ * room. A message that cannot be applied is answered with
+ * `{ "type": "error", "code", "message" }` on that socket only.
  *
- * The server assigns the player id. Any member of the room may start. Progress
- * sync is not part of this protocol.
+ * The server assigns the player id. Any member of the room may start.
  */
 
-/** Largest accepted frame. A join, leave, or start is a few dozen bytes. */
+/** Largest accepted frame. A join, leave, start, or progress is a few dozen bytes. */
 const MAX_MESSAGE_BYTES = 16 * 1024;
 
 export interface AttachRoomServerOptions {
@@ -109,7 +113,36 @@ export function attachRoomServer(
       startRace(socket);
       return;
     }
+    if (parsed.message.type === "progress") {
+      reportProgress(socket, parsed.message.position);
+      return;
+    }
     join(socket, parsed.message.roomId, parsed.message.name);
+  }
+
+  function reportProgress(socket: WebSocket, position: number): void {
+    const current = membership.get(socket);
+    if (current === undefined) {
+      send(socket, { type: "error", code: "not-in-room", message: "Not in a room" });
+      return;
+    }
+    let progress: PlayerProgress;
+    try {
+      progress = registry.reportProgress(current.roomId, current.playerId, position);
+    } catch (error: unknown) {
+      if (error instanceof RoomRegistryError) {
+        send(socket, registryError(error));
+        return;
+      }
+      throw error;
+    }
+    broadcast(current.roomId, {
+      type: "progress",
+      roomId: current.roomId,
+      playerId: progress.playerId,
+      position: progress.position,
+      finished: progress.finished,
+    });
   }
 
   function startRace(socket: WebSocket): void {
@@ -218,7 +251,10 @@ export function attachRoomServer(
     broadcast(roomId, { type: "players", roomId, players });
   }
 
-  function broadcast(roomId: string, message: PlayersRoomMessage | RaceStartRoomMessage): void {
+  function broadcast(
+    roomId: string,
+    message: PlayersRoomMessage | RaceStartRoomMessage | ProgressRoomMessage,
+  ): void {
     const sockets = socketsByRoom.get(roomId);
     if (sockets === undefined) {
       return;
@@ -266,7 +302,9 @@ function registryError(error: RoomRegistryError): ErrorRoomMessage {
     error.code === "already-joined" ||
     error.code === "not-in-room" ||
     error.code === "not-enough-players" ||
-    error.code === "race-in-progress"
+    error.code === "race-in-progress" ||
+    error.code === "race-not-running" ||
+    error.code === "invalid-progress"
   ) {
     return { type: "error", code: error.code, message: error.message };
   }

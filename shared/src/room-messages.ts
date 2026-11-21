@@ -1,11 +1,12 @@
 /**
  * JSON messages for a multiplayer room.
  *
- * The client sends `join`, `leave`, and `start`. The server broadcasts
- * `players` to the sockets still in the room when membership changes, and
- * broadcasts `race-start` (a snippet and the instant typing begins) when a
- * race is started. It sends `error` only to the socket that sent a message it
- * cannot apply. Syncing progress is not part of this protocol.
+ * The client sends `join`, `leave`, `start`, and `progress`. The server
+ * broadcasts `players` to the sockets still in the room when membership
+ * changes, and broadcasts `race-start` (a snippet and the instant typing
+ * begins) when a race is started. While that race is running, each accepted
+ * `progress` report is broadcast to the same sockets. The server sends
+ * `error` only to the socket that sent a message it cannot apply.
  *
  * Room ids are 1 to 16 letters or digits, matched without case. Typed ids may
  * use every digit, including characters a generated room code leaves out.
@@ -24,7 +25,11 @@ export const MAX_PLAYER_NAME_LENGTH = 24;
 export const ROOM_ID_PATTERN = new RegExp(`^[A-Z0-9]{1,${MAX_ROOM_ID_LENGTH}}$`);
 
 /** Client → server. */
-export type ClientRoomMessage = JoinRoomMessage | LeaveRoomMessage | StartRaceMessage;
+export type ClientRoomMessage =
+  | JoinRoomMessage
+  | LeaveRoomMessage
+  | StartRaceMessage
+  | ReportProgressMessage;
 
 export interface JoinRoomMessage {
   readonly type: "join";
@@ -43,6 +48,15 @@ export interface StartRaceMessage {
   readonly type: "start";
 }
 
+/**
+ * How far this player has typed. `position` counts characters in the snippet,
+ * from 0 through `snippet.code.length`.
+ */
+export interface ReportProgressMessage {
+  readonly type: "progress";
+  readonly position: number;
+}
+
 /** One player in a `players` broadcast. The server assigns `id`. */
 export interface RoomPlayer {
   readonly id: string;
@@ -50,7 +64,11 @@ export interface RoomPlayer {
 }
 
 /** Server → client. */
-export type ServerRoomMessage = PlayersRoomMessage | RaceStartRoomMessage | ErrorRoomMessage;
+export type ServerRoomMessage =
+  | PlayersRoomMessage
+  | RaceStartRoomMessage
+  | ProgressRoomMessage
+  | ErrorRoomMessage;
 
 export interface PlayersRoomMessage {
   readonly type: "players";
@@ -69,6 +87,18 @@ export interface RaceStartRoomMessage {
   readonly startsAt: number;
 }
 
+/**
+ * Sent to every socket in the room when one player's position is accepted.
+ * `finished` is true when `position` is the length of the race snippet.
+ */
+export interface ProgressRoomMessage {
+  readonly type: "progress";
+  readonly roomId: string;
+  readonly playerId: string;
+  readonly position: number;
+  readonly finished: boolean;
+}
+
 export type RoomErrorCode =
   | "malformed"
   | "invalid-room"
@@ -76,7 +106,9 @@ export type RoomErrorCode =
   | "already-joined"
   | "not-in-room"
   | "not-enough-players"
-  | "race-in-progress";
+  | "race-in-progress"
+  | "race-not-running"
+  | "invalid-progress";
 
 export interface ErrorRoomMessage {
   readonly type: "error";
@@ -130,7 +162,8 @@ export function normalizePlayerName(name: string): string | undefined {
 
 /**
  * Reads one client payload. A successful `join` carries the canonical room
- * id and the trimmed name. Extra fields are ignored.
+ * id and the trimmed name. A successful `progress` carries a non-negative
+ * integer position. Extra fields are ignored.
  */
 export function parseClientRoomMessage(raw: string): ParseClientRoomMessageResult {
   let value: unknown;
@@ -150,8 +183,11 @@ export function parseClientRoomMessage(raw: string): ParseClientRoomMessageResul
   if (record.type === "start") {
     return { ok: true, message: { type: "start" } };
   }
+  if (record.type === "progress") {
+    return parseProgress(record);
+  }
   if (record.type !== "join") {
-    return malformed("Expected type join, leave, or start");
+    return malformed("Expected type join, leave, start, or progress");
   }
   if (typeof record.roomId !== "string" || typeof record.name !== "string") {
     return malformed("Join requires roomId and name strings");
@@ -172,6 +208,14 @@ export function parseClientRoomMessage(raw: string): ParseClientRoomMessageResul
     };
   }
   return { ok: true, message: { type: "join", roomId, name } };
+}
+
+function parseProgress(record: Record<string, unknown>): ParseClientRoomMessageResult {
+  const position = record.position;
+  if (typeof position !== "number" || !Number.isSafeInteger(position) || position < 0) {
+    return malformed("Progress requires a non-negative integer position");
+  }
+  return { ok: true, message: { type: "progress", position } };
 }
 
 function malformed(message: string): ParseClientRoomMessageResult {

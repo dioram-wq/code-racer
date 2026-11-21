@@ -190,7 +190,7 @@ describe("room sockets", () => {
     expect(JSON.parse(await inbox.next())).toEqual({
       type: "error",
       code: "malformed",
-      message: "Expected type join, leave, or start",
+      message: "Expected type join, leave, start, or progress",
     });
 
     socket.send(Buffer.from([0, 1, 2]));
@@ -415,7 +415,7 @@ describe("room sockets", () => {
     expect(JSON.parse(await adaInbox.next())).toEqual({
       type: "error",
       code: "malformed",
-      message: "Expected type join, leave, or start",
+      message: "Expected type join, leave, start, or progress",
     });
     ada.send(Buffer.from([9]));
     expect(JSON.parse(await adaInbox.next())).toEqual({

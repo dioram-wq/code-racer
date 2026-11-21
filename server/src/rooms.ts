@@ -16,8 +16,10 @@ import {
  * can also open a room with a chosen id of 1 to 16 letters or digits. A room
  * with at least `MIN_RACE_PLAYERS` can start one race: the registry picks a
  * snippet, stores a countdown, and then reports that race as racing once
- * `startsAt` is reached. This module does not open a socket or read from the
- * network.
+ * `startsAt` is reached. While the race is racing, a player can report how
+ * many characters they have typed. That position cannot pass the snippet or
+ * move backward, and reaching the end marks the player finished. This module
+ * does not open a socket or read from the network.
  */
 
 /** Characters used in room codes. Omits 0, O, 1, I, and L. */
@@ -54,6 +56,15 @@ export interface RoomRace {
   readonly startsAt: number;
 }
 
+/** One player's accepted position in the current race. */
+export interface PlayerProgress {
+  readonly playerId: string;
+  /** Characters typed, from 0 through the snippet length. */
+  readonly position: number;
+  /** True when `position` is the length of the race snippet. */
+  readonly finished: boolean;
+}
+
 export type RoomRaceState =
   | { readonly phase: "waiting" }
   | { readonly phase: "countdown" | "racing"; readonly race: RoomRace };
@@ -69,6 +80,8 @@ export type RoomRegistryErrorCode =
   | "code-exhausted"
   | "not-enough-players"
   | "race-in-progress"
+  | "race-not-running"
+  | "invalid-progress"
   | "invalid-clock"
   | "invalid-snippet";
 
@@ -124,12 +137,20 @@ export interface RoomRegistry {
    * Both of those phases still hold the race, so `startRace` keeps rejecting.
    */
   raceState(code: string): RoomRaceState;
+  /**
+   * Records how far `playerId` has typed. The race must be racing. `position`
+   * counts characters from 0 through the snippet length and cannot move
+   * backward. The player is finished when it reaches the end of the snippet.
+   */
+  reportProgress(code: string, playerId: string, position: number): PlayerProgress;
 }
 
 interface MutableRoom {
   code: string;
   players: Player[];
   race: RoomRace | undefined;
+  /** Accepted character position for each player who has reported one. */
+  progress: Map<string, number>;
 }
 
 /**
@@ -194,7 +215,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       const member = readPlayer(player);
       assertAvailable(member.id);
       const code = allocateCode();
-      const room: MutableRoom = { code, players: [member], race: undefined };
+      const room: MutableRoom = { code, players: [member], race: undefined, progress: new Map() };
       rooms.set(code, room);
       roomByPlayer.set(member.id, code);
       return snapshot(room);
@@ -219,7 +240,12 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
         roomByPlayer.set(member.id, existing.code);
         return snapshot(existing);
       }
-      const room: MutableRoom = { code: roomId, players: [member], race: undefined };
+      const room: MutableRoom = {
+        code: roomId,
+        players: [member],
+        race: undefined,
+        progress: new Map(),
+      };
       rooms.set(roomId, room);
       roomByPlayer.set(member.id, room.code);
       return snapshot(room);
@@ -236,6 +262,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
         throw new RoomRegistryError("not-in-room", `Player ${id} is not in room ${room.code}`);
       }
       room.players.splice(index, 1);
+      room.progress.delete(id);
       roomByPlayer.delete(id);
       if (room.players.length === 0) {
         rooms.delete(room.code);
@@ -277,6 +304,31 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       const phase = readNow(now) < race.startsAt ? "countdown" : "racing";
       return { phase, race };
     },
+
+    reportProgress(code: string, playerId: string, position: number): PlayerProgress {
+      const room = requireRoom(code);
+      const id = readMemberId(room, playerId);
+      const cursor = readProgressPosition(position);
+      if (cursor === undefined) {
+        throw new RoomRegistryError(
+          "invalid-progress",
+          "Progress must be a non-negative integer",
+        );
+      }
+      if (room.race === undefined || readNow(now) < room.race.startsAt) {
+        throw new RoomRegistryError("race-not-running", "No race is running in this room");
+      }
+      const length = room.race.snippet.code.length;
+      if (cursor > length) {
+        throw new RoomRegistryError("invalid-progress", "Progress is past the end of the snippet");
+      }
+      const previous = room.progress.get(id) ?? 0;
+      if (cursor < previous) {
+        throw new RoomRegistryError("invalid-progress", "Progress cannot move backward");
+      }
+      room.progress.set(id, cursor);
+      return { playerId: id, position: cursor, finished: cursor === length };
+    },
   };
 }
 
@@ -306,6 +358,24 @@ function readPlayer(player: Player): Player {
     throw new RoomRegistryError("invalid-player", playerNameErrorMessage());
   }
   return { id, name };
+}
+
+function readMemberId(room: MutableRoom, playerId: string): string {
+  if (typeof playerId !== "string" || playerId.trim() === "") {
+    throw new RoomRegistryError("not-in-room", `Player is not in room ${room.code}`);
+  }
+  const id = playerId.trim();
+  if (!room.players.some((player) => player.id === id)) {
+    throw new RoomRegistryError("not-in-room", `Player ${id} is not in room ${room.code}`);
+  }
+  return id;
+}
+
+function readProgressPosition(position: number): number | undefined {
+  if (typeof position !== "number" || !Number.isSafeInteger(position) || position < 0) {
+    return undefined;
+  }
+  return position;
 }
 
 function readSuppliedCode(code: string): string {
