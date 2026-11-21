@@ -18,7 +18,7 @@ The project grows in small steps.
 - [x] Typecheck and test in GitHub Actions
 - [x] Lint in GitHub Actions
 
-The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Syncing progress is the next step.
+The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Once the race is running, a player can report a character position and the server broadcasts it. The client does not send progress yet.
 
 ## Develop
 
@@ -86,13 +86,33 @@ The room needs at least two players, and it holds one race at a time. The server
 
 `snippet` is a catalog passage: `id`, `language`, `title`, and the exact `code`. `startsAt` is Unix time in milliseconds. Until that instant the race is counting down. At that instant it is racing. A player who joins after this broadcast does not receive it again.
 
+While the race is running, a player reports how many characters they have typed. `position` counts characters in `snippet.code`, from 0 through that code's length. Extra fields are ignored:
+
+```json
+{ "type": "progress", "position": 12 }
+```
+
+The server accepts this only once `startsAt` has been reached. A report while the room is waiting, or still counting down, is rejected. `position` has to be a non-negative integer no greater than the snippet length, and it cannot move backward from that player's last accepted report. The same position may be sent again. Reaching the snippet length marks that player finished. Everyone still in the room receives:
+
+```json
+{
+  "type": "progress",
+  "roomId": "AB12",
+  "playerId": "…",
+  "position": 12,
+  "finished": false
+}
+```
+
+`finished` is true when `position` equals the length of `snippet.code`. The server does not resend earlier progress to a player who joins later. A player who leaves and joins again starts back at position 0.
+
 A message the server cannot apply is answered on that socket only:
 
 ```json
 { "type": "error", "code": "malformed", "message": "Expected JSON" }
 ```
 
-`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, `not-in-room`, `not-enough-players`, or `race-in-progress`. `malformed` covers a frame that is not a join, leave, or start object, including binary frames. `not-enough-players` means the room has fewer than two players. `race-in-progress` means this room already has a countdown or a race. Syncing progress is not part of this protocol yet.
+`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, `not-in-room`, `not-enough-players`, `race-in-progress`, `race-not-running`, or `invalid-progress`. `malformed` covers a frame that is not a join, leave, start, or progress object, including binary frames and a progress position that is not a non-negative integer. `not-enough-players` means the room has fewer than two players. `race-in-progress` means this room already has a countdown or a race. `race-not-running` means a progress report arrived while the room was waiting or still counting down. `invalid-progress` means the position is past the end of the snippet or behind that player's last report.
 
 ## Layout
 
@@ -100,10 +120,10 @@ A message the server cannot apply is answered on that socket only:
 | --- | --- |
 | `shared/` | Pure TypeScript game logic (stats, snippet selection, and the typing engine) and the room message types, shared by the client and the server |
 | `shared/src/typing.ts` | Keystrokes, per-character correctness, cursor, errors, and finish |
-| `shared/src/room-messages.ts` | JSON room protocol: join, leave, start, the player-list broadcast, the race-start broadcast, and error codes |
+| `shared/src/room-messages.ts` | JSON room protocol: join, leave, start, progress, the player-list broadcast, the race-start broadcast, the progress broadcast, and error codes |
 | `server/` | Express app and WebSocket rooms. `createApp()` serves `GET /health`. The start script listens on `PORT` (default 3001) and attaches the room socket to that HTTP server |
-| `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, list players, and start a race |
-| `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, start a race, and broadcast the player list and race start |
+| `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, list players, start a race, and record each player's progress while it is running |
+| `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, start a race, report progress, and broadcast the player list, race start, and progress |
 | `client/` | React and Vite race screen. Renders a shared snippet with pending, correct, incorrect, and cursor styles, plus a live clock, WPM, and accuracy. A language row filters the catalog. A finished passage shows the result and can load another snippet in the chosen language |
 | `client/src/race-characters.ts` | Maps typing-engine state onto those character styles |
 | `client/src/race-stats.ts` | Starts and stops the race clock, and formats WPM, accuracy, and elapsed time from the shared stats functions |
