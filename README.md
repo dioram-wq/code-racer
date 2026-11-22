@@ -13,12 +13,13 @@ The project grows in small steps.
 - [x] Snippet generator (JavaScript, TypeScript, Python, Go, and Rust)
 - [x] Typing engine (per-character correctness, backspace, finish detection)
 - [x] Single-player race screen (snippet, character styles, live stats, result, next snippet, and language choice)
-- [x] Express server and WebSocket rooms (join, leave, player list, and race start)
-- [ ] Sync typing progress during a race
+- [x] Express server and WebSocket rooms (join, leave, player list, race start, and progress)
+- [x] Client progress protocol (build a progress message from the typing cursor, and fold room broadcasts into per-player progress)
+- [ ] Send typing progress from the race screen and show the other players
 - [x] Typecheck and test in GitHub Actions
 - [x] Lint in GitHub Actions
 
-The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Once the race is running, a player can report a character position and the server broadcasts it. The client does not send progress yet.
+The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Once the race is running, a player can report a character position and the server broadcasts it. The client builds that report from the typing cursor and folds the player list, the race start, and those broadcasts into a position and finished flag for each player who is still in the room. The race screen does not send or show progress yet.
 
 ## Develop
 
@@ -106,6 +107,8 @@ The server accepts this only once `startsAt` has been reached. A report while th
 
 `finished` is true when `position` equals the length of `snippet.code`. The server does not resend earlier progress to a player who joins later. A player who leaves and joins again starts back at position 0.
 
+The client keeps a view of these broadcasts in `client/src/net/race-protocol.ts`. `progressMessage` builds the outgoing report from the typing cursor. `applyServerRoomMessage` folds a `players`, `race-start`, or `progress` frame into a position and `finished` flag for each player still in the room. An `error`, or a frame the module cannot read, leaves that view unchanged. The race screen does not call this yet.
+
 A message the server cannot apply is answered on that socket only:
 
 ```json
@@ -125,6 +128,7 @@ A message the server cannot apply is answered on that socket only:
 | `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, list players, start a race, and record each player's progress while it is running |
 | `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, start a race, report progress, and broadcast the player list, race start, and progress |
 | `client/` | React and Vite race screen. Renders a shared snippet with pending, correct, incorrect, and cursor styles, plus a live clock, WPM, and accuracy. A language row filters the catalog. A finished passage shows the result and can load another snippet in the chosen language |
+| `client/src/net/race-protocol.ts` | Builds the outgoing progress message from the typing cursor, and folds player, race-start, and progress broadcasts into a per-player position and finished flag |
 | `client/src/race-characters.ts` | Maps typing-engine state onto those character styles |
 | `client/src/race-stats.ts` | Starts and stops the race clock, and formats WPM, accuracy, and elapsed time from the shared stats functions |
 | `client/src/race-passage.ts` | Picks the next snippet without an immediate repeat, resets the typing state and clock, and formats the finished result |
