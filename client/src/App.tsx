@@ -6,7 +6,9 @@ import {
   type TypingState,
 } from "@code-racer/shared";
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useRaceProgress } from "./net/use-race-progress.js";
 import { raceCharacters } from "./race-characters.js";
+import { RaceStandings } from "./race-standings.js";
 import {
   advanceLanguagePassage,
   changeLanguagePassage,
@@ -94,6 +96,10 @@ export function App() {
     session: openPassage(openingSnippet),
   }));
   const { session } = race;
+  const { others } = useRaceProgress({
+    cursor: session.typing.cursor,
+    passageId: session.snippet.id,
+  });
   const running = isRaceClockRunning(session.timing);
   const stats = liveRaceStats(session.timing, session.typing, session.now);
   const snippet = session.snippet;
@@ -213,6 +219,7 @@ export function App() {
           ),
         )}
       </pre>
+      <RaceStandings rows={others} />
       <p className={stats.finished ? "hint result" : "hint"} aria-live="polite">
         {formatPassageResult(stats.resultLabel)}
       </p>

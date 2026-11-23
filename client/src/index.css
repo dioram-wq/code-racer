@@ -183,3 +183,43 @@ body {
   outline: 1px solid var(--amber);
   outline-offset: 3px;
 }
+
+.standings {
+  margin: 1rem 0 0;
+}
+
+.standings-label {
+  margin: 0;
+  color: var(--dim);
+}
+
+.standings-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+}
+
+.standings-player {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  margin: 0.2rem 0;
+}
+
+.standings-name {
+  color: var(--text);
+}
+
+.standings-bar {
+  color: var(--green);
+}
+
+.standings-status {
+  color: var(--dim);
+}
+
+.standings-player[data-finished="true"] .standings-bar,
+.standings-player[data-finished="true"] .standings-status {
+  color: var(--amber);
+}

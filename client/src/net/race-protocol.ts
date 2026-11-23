@@ -7,8 +7,8 @@
  * and finished flag. A frame that is not valid JSON, or not a players,
  * race-start, progress, or error message, is ignored.
  *
- * This module does not open a socket and does not know about React. The race
- * screen does not send or render this state yet.
+ * This module does not open a socket and does not know about React.
+ * `useRaceProgress` folds these frames and sends a cursor that moved forward.
  */
 
 import {
