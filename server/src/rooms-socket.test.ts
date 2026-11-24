@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { getSnippet, type Snippet } from "@code-racer/shared";
+import { getSnippet, playerIdErrorMessage, type Snippet } from "@code-racer/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { type WebSocketServer } from "ws";
 import { createApp } from "./app.js";
@@ -657,6 +657,81 @@ describe("room sockets", () => {
         { id: "ada", name: "Ada" },
       ],
     });
+  });
+
+  it("uses a supplied player id and still assigns one when it is omitted", async () => {
+    const running = await start();
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+
+    ada.send(json({ type: "join", roomId: " ab12 ", name: "Ada", playerId: "  Ab-1  " }));
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "players",
+      roomId: "AB12",
+      players: [{ id: "Ab-1", name: "Ada" }],
+    });
+
+    const adaSeesBea = adaInbox.next();
+    bea.send(json({ type: "join", roomId: "AB12", name: "Bea" }));
+    const both = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "Ab-1", name: "Ada" },
+        { id: "p1", name: "Bea" },
+      ],
+    };
+    expect(JSON.parse(await adaSeesBea)).toEqual(both);
+    expect(JSON.parse(await beaInbox.next())).toEqual(both);
+    expect(running.registry.listPlayers("AB12")).toEqual(both.players);
+  });
+
+  it("rejects a duplicate player id and a player id the protocol will not accept", async () => {
+    const running = await start();
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+
+    ada.send(json({ type: "join", roomId: "AB12", name: "Ada", playerId: "ada-1" }));
+    await adaInbox.next();
+
+    bea.send(json({ type: "join", roomId: "AB12", name: "Bea", playerId: "ada-1" }));
+    expect(JSON.parse(await beaInbox.next())).toEqual({
+      type: "error",
+      code: "already-joined",
+      message: "Player ada-1 is already in room AB12",
+    });
+    expect(running.registry.listPlayers("AB12")).toEqual([{ id: "ada-1", name: "Ada" }]);
+
+    bea.send(json({ type: "join", roomId: "AB12", name: "Bea", playerId: "bad id" }));
+    expect(JSON.parse(await beaInbox.next())).toEqual({
+      type: "error",
+      code: "invalid-player",
+      message: playerIdErrorMessage(),
+    });
+    bea.send(json({ type: "join", roomId: "AB12", name: "Bea", playerId: 4 }));
+    expect(JSON.parse(await beaInbox.next())).toEqual({
+      type: "error",
+      code: "malformed",
+      message: "Join playerId must be a string",
+    });
+    expect(running.registry.listPlayers("AB12")).toEqual([{ id: "ada-1", name: "Ada" }]);
+
+    const adaSeesBea = adaInbox.next();
+    bea.send(json({ type: "join", roomId: "AB12", name: "Bea", playerId: "bea-2" }));
+    const both = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "ada-1", name: "Ada" },
+        { id: "bea-2", name: "Bea" },
+      ],
+    };
+    expect(JSON.parse(await adaSeesBea)).toEqual(both);
+    expect(JSON.parse(await beaInbox.next())).toEqual(both);
   });
 });
 

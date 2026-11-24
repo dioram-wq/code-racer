@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_PLAYER_ID_LENGTH,
   MAX_PLAYER_NAME_LENGTH,
   MAX_ROOM_ID_LENGTH,
+  PLAYER_ID_PATTERN,
   ROOM_ID_PATTERN,
+  normalizePlayerId,
   normalizePlayerName,
   normalizeRoomId,
   parseClientRoomMessage,
+  playerIdErrorMessage,
   playerNameErrorMessage,
   roomIdErrorMessage,
 } from "./index.js";
@@ -145,5 +149,57 @@ describe("parseClientRoomMessage", () => {
     ).toMatchObject({ ok: false, error: { code: "invalid-player" } });
     expect(normalizeRoomId("")).toBeUndefined();
     expect(normalizePlayerName("")).toBeUndefined();
+  });
+
+  it("keeps a supplied player id and ignores other extra fields", () => {
+    expect(MAX_PLAYER_ID_LENGTH).toBe(64);
+    expect(PLAYER_ID_PATTERN.test("Ab-1")).toBe(true);
+    expect(normalizePlayerId("  Ab-1  ")).toBe("Ab-1");
+
+    expect(
+      parseClientRoomMessage(
+        JSON.stringify({
+          type: "join",
+          roomId: " ab12 ",
+          name: " Ada ",
+          playerId: "  Ab-1  ",
+          extra: true,
+        }),
+      ),
+    ).toEqual({
+      ok: true,
+      message: { type: "join", roomId: "AB12", name: "Ada", playerId: "Ab-1" },
+    });
+    expect(
+      parseClientRoomMessage(
+        JSON.stringify({ type: "join", roomId: "AB", name: "Ada", playerId: "a".repeat(64) }),
+      ),
+    ).toEqual({
+      ok: true,
+      message: { type: "join", roomId: "AB", name: "Ada", playerId: "a".repeat(64) },
+    });
+  });
+
+  it("rejects a player id that is not a string or not an id", () => {
+    const malformedId = {
+      ok: false,
+      error: { type: "error", code: "malformed", message: "Join playerId must be a string" },
+    };
+    const invalidId = {
+      ok: false,
+      error: { type: "error", code: "invalid-player", message: playerIdErrorMessage() },
+    };
+    for (const playerId of [12, null, true, { id: "ada" }]) {
+      expect(
+        parseClientRoomMessage(JSON.stringify({ type: "join", roomId: "AB", name: "Ada", playerId })),
+      ).toEqual(malformedId);
+    }
+    for (const playerId of ["", "   ", "bad id", "ada_1", "a".repeat(65), "Ada.1"]) {
+      expect(
+        parseClientRoomMessage(JSON.stringify({ type: "join", roomId: "AB", name: "Ada", playerId })),
+      ).toEqual(invalidId);
+      expect(normalizePlayerId(playerId)).toBeUndefined();
+    }
+    expect(normalizePlayerId(12 as unknown as string)).toBeUndefined();
   });
 });
