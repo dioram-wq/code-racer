@@ -1,12 +1,12 @@
 /**
  * Folds a room link into per-player progress and sends the local cursor.
  *
- * `link` is omitted until something else owns a socket. While it is present,
- * `frames` are folded with `applyServerRoomMessage` and a cursor that moves
- * forward is reported through `link.send`. Reports wait until the passage on
- * screen is that race's snippet and the countdown has finished. The finish
- * itself is sent at once. This hook does not open a socket, and it does not
- * retry a report the server rejects.
+ * `link` comes from `useRoomConnection` once that socket has joined. While it
+ * is present, `frames` are folded with `applyServerRoomMessage` and a cursor
+ * that moves forward is reported through `link.send`. Reports wait until the
+ * passage on screen is that race's snippet and the countdown has finished.
+ * The finish itself is sent at once. This hook does not open a socket, and
+ * it does not retry a report the server rejects.
  */
 
 import type { ReportProgressMessage } from "@code-racer/shared";
@@ -38,8 +38,8 @@ export interface RaceRoomLink {
 }
 
 export interface RaceProgressOptions {
-  /** Absent while the screen is not in a room. */
-  readonly link?: RaceRoomLink;
+  /** Absent, or explicitly undefined, while the screen is not in a room. */
+  readonly link?: RaceRoomLink | undefined;
   /** Local typing cursor. */
   readonly cursor: number;
   /** Id of the snippet on screen. */

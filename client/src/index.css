@@ -112,6 +112,82 @@ body {
   outline-offset: 3px;
 }
 
+.lang-choice:disabled {
+  cursor: default;
+}
+
+.lang-choice:disabled:hover {
+  color: var(--dim);
+}
+
+.lang-choice[aria-checked="true"]:disabled,
+.lang-choice[aria-checked="true"]:disabled:hover {
+  color: var(--green);
+}
+
+.room-panel {
+  margin: 0.85rem 0 0;
+}
+
+.room-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.55rem;
+}
+
+.room-label {
+  color: var(--dim);
+}
+
+.room-status {
+  color: var(--text);
+}
+
+.room-field {
+  width: 7rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.room-field.room-name {
+  width: 10rem;
+}
+
+.room-field:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.room-action {
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--amber);
+  font: inherit;
+  cursor: pointer;
+}
+
+.room-action:hover {
+  background: var(--amber);
+  color: var(--bg);
+}
+
+.room-action:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.room-error {
+  margin: 0.4rem 0 0;
+  color: var(--amber);
+}
+
 .passage {
   margin: 0;
   padding: 1.25rem 1.5rem;

@@ -23,9 +23,11 @@ import {
  *
  * A client joins with `{ "type": "join", "roomId", "name" }`, leaves with
  * `{ "type": "leave" }`, starts a race with `{ "type": "start" }`, and reports
- * a character position with `{ "type": "progress", "position" }`. Closing the
- * socket leaves too. The first join for an id creates the room in the
- * in-memory registry. Every membership change is broadcast as
+ * a character position with `{ "type": "progress", "position" }`. A join may
+ * include `playerId`. That id is used when it is present and still free;
+ * otherwise the server assigns one. Closing the socket leaves too. The first
+ * join for a room id creates the room in the in-memory registry. Every
+ * membership change is broadcast as
  * `{ "type": "players", "roomId", "players" }` to the sockets still in that
  * room, in join order. A successful start picks a snippet, stores a countdown
  * on the room, and broadcasts `{ "type": "race-start", "roomId", "snippet",
@@ -34,7 +36,8 @@ import {
  * room. A message that cannot be applied is answered with
  * `{ "type": "error", "code", "message" }` on that socket only.
  *
- * The server assigns the player id. Any member of the room may start.
+ * Any member of the room may start. The player id is the one on the join
+ * when the client sent one, and a server-assigned id when it did not.
  */
 
 /** Largest accepted frame. A join, leave, start, or progress is a few dozen bytes. */
@@ -117,7 +120,7 @@ export function attachRoomServer(
       reportProgress(socket, parsed.message.position);
       return;
     }
-    join(socket, parsed.message.roomId, parsed.message.name);
+    join(socket, parsed.message.roomId, parsed.message.name, parsed.message.playerId);
   }
 
   function reportProgress(socket: WebSocket, position: number): void {
@@ -169,7 +172,12 @@ export function attachRoomServer(
     });
   }
 
-  function join(socket: WebSocket, roomId: string, name: string): void {
+  function join(
+    socket: WebSocket,
+    roomId: string,
+    name: string,
+    requestedId: string | undefined,
+  ): void {
     const current = membership.get(socket);
     if (current !== undefined) {
       send(socket, {
@@ -180,7 +188,7 @@ export function attachRoomServer(
       return;
     }
 
-    const playerId = readPlayerId(createPlayerId);
+    const playerId = requestedId ?? readPlayerId(createPlayerId);
     let room: { code: string };
     try {
       room = registry.joinOrCreate(roomId, { id: playerId, name });
