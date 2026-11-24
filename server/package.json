@@ -2,7 +2,7 @@
   "name": "@code-racer/server",
   "version": "0.0.0",
   "private": true,
-  "description": "Express server for code-racer. Health check, in-memory rooms, and WebSocket rooms that start a race and broadcast typing progress.",
+  "description": "Express server for code-racer. Health check, in-memory rooms, and WebSocket rooms that start a race and broadcast typing progress. A join may supply its player id.",
   "license": "MIT",
   "type": "module",
   "scripts": {

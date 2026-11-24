@@ -15,11 +15,12 @@ The project grows in small steps.
 - [x] Single-player race screen (snippet, character styles, live stats, result, next snippet, and language choice)
 - [x] Express server and WebSocket rooms (join, leave, player list, race start, and progress)
 - [x] Client progress protocol (build a progress message from the typing cursor, and fold room broadcasts into per-player progress)
-- [ ] Send typing progress from the race screen and show the other players
+- [x] Send typing progress from the race screen and show the other players
+- [ ] Send the race in progress to a player who joins late
 - [x] Typecheck and test in GitHub Actions
 - [x] Lint in GitHub Actions
 
-The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Once the race is running, a player can report a character position and the server broadcasts it. The client builds that report from the typing cursor and folds the player list, the race start, and those broadcasts into a position and finished flag for each player who is still in the room. While a room link is connected, and the passage on screen is that race's snippet, the race screen sends a cursor that has moved forward. The first one goes out immediately. Another one inside the next tenth of a second is held, and the newest is what goes out when that interval ends. Reaching the end of the snippet is sent at once. A cursor that does not move forward is not sent. Under the passage, the screen lists every other player with a terminal bar. The screen does not open a socket or join a room yet, so nothing is sent and that list stays empty.
+The server accepts WebSocket room membership. A client joins a room by id with a player name, leaves, or disconnects, and the server broadcasts that room's player list. Any player in a room of at least two can start a race. The server picks a snippet, counts down for three seconds, and broadcasts the snippet and the start time. Once the race is running, a player can report a character position and the server broadcasts it. The client builds that report from the typing cursor and folds the player list, the race start, and those broadcasts into a position and finished flag for each player who is still in the room. While a room link is connected, and the passage on screen is that race's snippet, the race screen sends a cursor that has moved forward. The first one goes out immediately. Another one inside the next tenth of a second is held, and the newest is what goes out when that interval ends. Reaching the end of the snippet is sent at once. A cursor that does not move forward is not sent. Under the passage, the screen lists every other player with a terminal bar. A room row on the screen opens the socket: a name and a room id join `ws://<page-host>:3001` (or `wss` when the page is https), the join carries a player id the screen generated, and start asks the server to begin. The race-start frame replaces the passage with that snippet. Until the passage is finished, the language buttons do not load a different one. Leave closes the socket. A player who joins after the race has started still does not receive the snippet or the earlier progress.
 
 ## Develop
 
@@ -33,18 +34,24 @@ npm run dev -w @code-racer/client
 npm start -w @code-racer/server
 ```
 
-`npm test` and `npm run typecheck` run in every workspace. The dev script starts the Vite client at <http://localhost:5173>. It starts on a TypeScript snippet, with a language row for JavaScript, TypeScript, Python, Go, Rust, or any. Choosing a language loads a fresh passage from that set and resets the typing state and the clock. Any uses the whole catalog. The screen colors each character as you type, and shows elapsed time, words per minute, and accuracy. The current language is shown next to the snippet title. The clock starts on the first keystroke and stops when the passage is finished. The finished line shows the final words per minute, accuracy, and time. Next snippet, Enter, or Tab loads a different passage in the chosen language and resets the typing state and the clock. Other players, when a room link is connected, are listed under the passage with a bar for how far they have typed. The dev screen does not connect one, so that list stays hidden.
+`npm test` and `npm run typecheck` run in every workspace. The dev script starts the Vite client at <http://localhost:5173>. It starts on a TypeScript snippet, with a language row for JavaScript, TypeScript, Python, Go, Rust, or any. Choosing a language loads a fresh passage from that set and resets the typing state and the clock. Any uses the whole catalog. The screen colors each character as you type, and shows elapsed time, words per minute, and accuracy. The current language is shown next to the snippet title. The clock starts on the first keystroke and stops when the passage is finished. The finished line shows the final words per minute, accuracy, and time. Next snippet, Enter, or Tab loads a different passage in the chosen language and resets the typing state and the clock. The room row under the prompt joins a room on the server. The name defaults to guest. An empty or invalid room id is rejected before a socket opens. After the join, the row shows the room and a start button, and anyone else in the room is listed under the passage. Start is rejected while the room has fewer than two players. When the race begins, the passage becomes the server's snippet. Leave returns to the form. If the socket never opens, or drops, the row says so and the form comes back.
 
 `npm start -w @code-racer/server` listens on port 3001, or on `PORT` when that variable is set. `GET http://localhost:3001/health` returns `{ "ok": true }`. A WebSocket on the same port speaks the room protocol below. Rooms stay in memory inside that process.
 
 ## Rooms
 
-The socket URL is `ws://localhost:3001` (or whatever `PORT` is). Each message is one JSON object. Room ids are 1 to 16 letters or digits, matched without case, so `ab12` and `AB12` are the same room. A typed id can use any letter or digit, including 0, O, 1, I, and L, which generated room codes leave out. The first join creates the room. Player names are trimmed and must be 1 to 24 characters. The server assigns each connection a player id. A connection is in one room at a time.
+The socket URL is `ws://localhost:3001` (or whatever `PORT` is). The race screen uses the page host with that port, and `wss` when the page is https. Each message is one JSON object. Room ids are 1 to 16 letters or digits, matched without case, so `ab12` and `AB12` are the same room. A typed id can use any letter or digit, including 0, O, 1, I, and L, which generated room codes leave out. The first join creates the room. Player names are trimmed and must be 1 to 24 characters. A join may include a player id of 1 to 64 letters, digits, or hyphens; the server uses it when it is present and still free, and assigns one when it is absent. A connection is in one room at a time, and a player id can be in only one room.
 
 A client joins:
 
 ```json
 { "type": "join", "roomId": "ab12", "name": "Ada" }
+```
+
+The same join can name the player id. The race screen always does, so it can tell its own row from the others. The id is trimmed and keeps its case. Extra fields are ignored:
+
+```json
+{ "type": "join", "roomId": "ab12", "name": "Ada", "playerId": "6f0c8c3a-1b2e-4d5f-9a6b-7c8d9e0f1a2b" }
 ```
 
 A client leaves:
@@ -107,7 +114,7 @@ The server accepts this only once `startsAt` has been reached. A report while th
 
 `finished` is true when `position` equals the length of `snippet.code`. The server does not resend earlier progress to a player who joins later. A player who leaves and joins again starts back at position 0.
 
-The client keeps a view of these broadcasts in `client/src/net/race-protocol.ts`. `progressMessage` builds the outgoing report from the typing cursor. `applyServerRoomMessage` folds a `players`, `race-start`, or `progress` frame into a position and `finished` flag for each player still in the room. An `error`, or a frame the module cannot read, leaves that view unchanged. `client/src/net/progress-report.ts` decides which of those cursors to send. `client/src/net/use-race-progress.ts` folds the frames from a room link and sends them while the passage on screen is the race snippet. `client/src/race-standings.tsx` renders the other players under the passage. The screen calls that hook with the local cursor. It does not open a socket, so the link is absent and the list stays empty.
+The client keeps a view of these broadcasts in `client/src/net/race-protocol.ts`. `progressMessage` builds the outgoing report from the typing cursor. `applyServerRoomMessage` folds a `players`, `race-start`, or `progress` frame into a position and `finished` flag for each player still in the room. An `error`, or a frame the module cannot read, leaves that view unchanged. `client/src/net/progress-report.ts` decides which of those cursors to send. `client/src/net/room-session.ts` builds the join, including the player id, and decides which frames to write. `client/src/net/use-room-connection.ts` opens the socket. `client/src/net/use-race-progress.ts` folds the frames from that link and sends them while the passage on screen is the race snippet. `client/src/race-room.ts` swaps the passage for the race snippet. `client/src/room-join.tsx` is the room row. `client/src/race-standings.tsx` renders the other players under the passage. The local player is left out of that list because the join named this socket's id.
 
 A message the server cannot apply is answered on that socket only:
 
@@ -115,7 +122,7 @@ A message the server cannot apply is answered on that socket only:
 { "type": "error", "code": "malformed", "message": "Expected JSON" }
 ```
 
-`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, `not-in-room`, `not-enough-players`, `race-in-progress`, `race-not-running`, or `invalid-progress`. `malformed` covers a frame that is not a join, leave, start, or progress object, including binary frames and a progress position that is not a non-negative integer. `not-enough-players` means the room has fewer than two players. `race-in-progress` means this room already has a countdown or a race. `race-not-running` means a progress report arrived while the room was waiting or still counting down. `invalid-progress` means the position is past the end of the snippet or behind that player's last report.
+`code` is `malformed`, `invalid-room`, `invalid-player`, `already-joined`, `not-in-room`, `not-enough-players`, `race-in-progress`, `race-not-running`, or `invalid-progress`. `malformed` covers a frame that is not a join, leave, start, or progress object, including binary frames, a progress position that is not a non-negative integer, and a `playerId` that is not a string. `invalid-player` is a name or a supplied player id that fails its length and character rules. `already-joined` means this socket is already in a room, or the supplied player id is already in one. `not-enough-players` means the room has fewer than two players. `race-in-progress` means this room already has a countdown or a race. `race-not-running` means a progress report arrived while the room was waiting or still counting down. `invalid-progress` means the position is past the end of the snippet or behind that player's last report.
 
 ## Layout
 
@@ -123,14 +130,18 @@ A message the server cannot apply is answered on that socket only:
 | --- | --- |
 | `shared/` | Pure TypeScript game logic (stats, snippet selection, and the typing engine) and the room message types, shared by the client and the server |
 | `shared/src/typing.ts` | Keystrokes, per-character correctness, cursor, errors, and finish |
-| `shared/src/room-messages.ts` | JSON room protocol: join, leave, start, progress, the player-list broadcast, the race-start broadcast, the progress broadcast, and error codes |
+| `shared/src/room-messages.ts` | JSON room protocol: join (with an optional player id), leave, start, progress, the player-list broadcast, the race-start broadcast, the progress broadcast, and error codes |
 | `server/` | Express app and WebSocket rooms. `createApp()` serves `GET /health`. The start script listens on `PORT` (default 3001) and attaches the room socket to that HTTP server |
 | `server/src/rooms.ts` | In-memory rooms: create a short code, join an existing code, open a room by id, leave, list players, start a race, and record each player's progress while it is running |
 | `server/src/rooms-socket.ts` | WebSocket transport: join, leave, disconnect, start a race, report progress, and broadcast the player list, race start, and progress |
-| `client/` | React and Vite race screen. Renders a shared snippet with pending, correct, incorrect, and cursor styles, plus a live clock, WPM, and accuracy. A language row filters the catalog. A finished passage shows the result and can load another snippet in the chosen language. When a room link is connected, a list under the passage shows the other players' progress. The screen does not open that link yet |
+| `client/` | React and Vite race screen. Renders a shared snippet with pending, correct, incorrect, and cursor styles, plus a live clock, WPM, and accuracy. A language row filters the catalog. A finished passage shows the result and can load another snippet in the chosen language. A room row joins a server room, starts the race, loads that snippet, and lists the other players under the passage |
 | `client/src/net/race-protocol.ts` | Builds the outgoing progress message from the typing cursor, and folds player, race-start, and progress broadcasts into a per-player position and finished flag |
 | `client/src/net/progress-report.ts` | Decides which cursors are worth a progress report: ahead of the last send, held for a tenth of a second, then flushed. The finish is sent at once |
 | `client/src/net/use-race-progress.ts` | While a room link is connected, folds server frames and sends the throttled cursor for the snippet on screen |
+| `client/src/net/room-session.ts` | Join message, socket URL, and the pure session that decides what to send |
+| `client/src/net/use-room-connection.ts` | Opens the WebSocket, joins, and exposes the room link once the player list names this socket |
+| `client/src/race-room.ts` | Replaces the passage with the race snippet and keeps the language row on it until the buffer is finished |
+| `client/src/room-join.tsx` | Room row: name, room id, join, start, and leave |
 | `client/src/race-standings.tsx` | Terminal bars for every player except the local one |
 | `client/src/race-characters.ts` | Maps typing-engine state onto those character styles |
 | `client/src/race-stats.ts` | Starts and stops the race clock, and formats WPM, accuracy, and elapsed time from the shared stats functions |
