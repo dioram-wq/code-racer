@@ -8,8 +8,10 @@
  * typing begins) when a race is started. While that race is running, each
  * accepted `progress` report is broadcast to the same sockets. A player who
  * joins during the countdown or the race receives that `race-start` and one
- * `progress` frame for each accepted position, on their socket only. The
- * server sends `error` only to the socket that sent a message it cannot apply.
+ * `progress` frame for each accepted position, on their socket only. When
+ * the race ends, the server broadcasts `race-results` (finishing order, time,
+ * and words per minute) and the room can start another race. The server
+ * sends `error` only to the socket that sent a message it cannot apply.
  *
  * Room ids are 1 to 16 letters or digits, matched without case. Typed ids may
  * use every digit, including characters a generated room code leaves out.
@@ -83,6 +85,7 @@ export type ServerRoomMessage =
   | PlayersRoomMessage
   | RaceStartRoomMessage
   | ProgressRoomMessage
+  | RaceResultsRoomMessage
   | ErrorRoomMessage;
 
 export interface PlayersRoomMessage {
@@ -112,6 +115,34 @@ export interface ProgressRoomMessage {
   readonly playerId: string;
   readonly position: number;
   readonly finished: boolean;
+}
+
+/**
+ * One finisher in a `race-results` broadcast.
+ *
+ * `place` is 1 for the first player to finish. `timeMs` is how long after
+ * `startsAt` that finish was accepted. `wpm` is the shared words-per-minute
+ * figure for the whole snippet over that time, and it is not rounded.
+ */
+export interface RaceResultEntry {
+  readonly playerId: string;
+  readonly name: string;
+  readonly place: number;
+  readonly timeMs: number;
+  readonly wpm: number;
+}
+
+/**
+ * Sent to every socket still in the room when the race ends.
+ *
+ * `results` is finishing order. A player who left, or who had not finished
+ * when the time limit ended the race, is omitted. An empty list means the
+ * race ended and nobody finished. The room is waiting after this frame.
+ */
+export interface RaceResultsRoomMessage {
+  readonly type: "race-results";
+  readonly roomId: string;
+  readonly results: readonly RaceResultEntry[];
 }
 
 export type RoomErrorCode =

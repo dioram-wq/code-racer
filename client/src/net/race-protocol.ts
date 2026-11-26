@@ -4,8 +4,11 @@
  * `progressMessage` turns the typing cursor into the progress report the
  * server accepts. `applyServerRoomMessage` folds a server frame into the
  * players still in the room, the race snippet, and each player's position
- * and finished flag. A frame that is not valid JSON, or not a players,
- * race-start, progress, or error message, is ignored.
+ * and finished flag. A `race-results` frame returns the room to idle: the
+ * snippet is cleared and every player goes back to the start, so another
+ * race can be started. The places themselves are not stored. A frame that
+ * is not valid JSON, or not a players, race-start, progress, race-results,
+ * or error message, is ignored.
  *
  * This module does not open a socket and does not know about React.
  * `useRaceProgress` folds these frames and sends a cursor that moved forward.
@@ -15,6 +18,7 @@ import {
   isLanguage,
   normalizePlayerName,
   normalizeRoomId,
+  type RaceResultEntry,
   type ReportProgressMessage,
   type RoomErrorCode,
   type RoomPlayer,
@@ -85,7 +89,8 @@ export function progressMessage(state: TypingState): ReportProgressMessage {
  *
  * Returns undefined for invalid JSON, a non-object, an unknown type, or a
  * known type with fields this client cannot use. Extra fields are dropped.
- * A successful `players` or `race-start` carries the canonical room id.
+ * A successful `players`, `race-start`, or `race-results` carries the
+ * canonical room id.
  */
 export function parseServerRoomMessage(raw: string): ServerRoomMessage | undefined {
   let value: unknown;
@@ -104,6 +109,8 @@ export function parseServerRoomMessage(raw: string): ServerRoomMessage | undefin
       return parseRaceStart(value);
     case "progress":
       return parseProgress(value);
+    case "race-results":
+      return parseRaceResults(value);
     case "error":
       return parseError(value);
     default:
@@ -119,9 +126,10 @@ export function parseServerRoomMessage(raw: string): ServerRoomMessage | undefin
  * the snippet and sets every remaining player back to 0. A `progress` frame
  * stores that player's position and finished flag when they are still in the
  * room, the room matches, and the position does not move backward or run
- * past the snippet. An `error` is for the socket that sent a bad report, so
- * it leaves this state unchanged. The same state is returned when nothing
- * changes.
+ * past the snippet. A `race-results` frame clears the snippet and sets every
+ * remaining player back to the start. An `error` is for the socket that sent
+ * a bad report, so it leaves this state unchanged. The same state is returned
+ * when nothing changes.
  */
 export function reduceRaceRoom(state: RaceRoomState, message: ServerRoomMessage): RaceRoomState {
   switch (message.type) {
@@ -131,6 +139,8 @@ export function reduceRaceRoom(state: RaceRoomState, message: ServerRoomMessage)
       return applyRaceStart(state, message.roomId, message.snippet, message.startsAt);
     case "progress":
       return applyProgress(state, message);
+    case "race-results":
+      return applyRaceResults(state, message.roomId);
     case "error":
       return state;
   }
@@ -192,6 +202,24 @@ function applyRaceStart(
     return state;
   }
   return { roomId, players, snippet, startsAt };
+}
+
+function applyRaceResults(state: RaceRoomState, roomId: string): RaceRoomState {
+  if (state.roomId !== undefined && state.roomId !== roomId) {
+    return state;
+  }
+  const players = state.players.map((player) =>
+    player.position === 0 && !player.finished ? player : atStart(player.id, player.name),
+  );
+  if (
+    state.roomId === roomId &&
+    state.snippet === undefined &&
+    state.startsAt === undefined &&
+    samePlayers(state.players, players)
+  ) {
+    return state;
+  }
+  return { roomId, players, snippet: undefined, startsAt: undefined };
 }
 
 function applyProgress(state: RaceRoomState, message: ProgressFields): RaceRoomState {
@@ -308,6 +336,53 @@ function parseProgress(record: Record<string, unknown>): ServerRoomMessage | und
   return { type: "progress", roomId, playerId, position, finished: record.finished };
 }
 
+function parseRaceResults(record: Record<string, unknown>): ServerRoomMessage | undefined {
+  const roomId = readRoomId(record.roomId);
+  const results = readRaceResults(record.results);
+  if (roomId === undefined || results === undefined) {
+    return undefined;
+  }
+  return { type: "race-results", roomId, results };
+}
+
+function readRaceResults(value: unknown): readonly RaceResultEntry[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const results: RaceResultEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const result = readRaceResult(entry);
+    if (result === undefined || seen.has(result.playerId)) {
+      return undefined;
+    }
+    seen.add(result.playerId);
+    results.push(result);
+  }
+  return results;
+}
+
+function readRaceResult(value: unknown): RaceResultEntry | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const playerId = readPlayerId(value.playerId);
+  const name = typeof value.name === "string" ? normalizePlayerName(value.name) : undefined;
+  const place = readPlace(value.place);
+  const timeMs = readNonNegativeFinite(value.timeMs);
+  const wpm = readNonNegativeFinite(value.wpm);
+  if (
+    playerId === undefined ||
+    name === undefined ||
+    place === undefined ||
+    timeMs === undefined ||
+    wpm === undefined
+  ) {
+    return undefined;
+  }
+  return { playerId, name, place, timeMs, wpm };
+}
+
 function parseError(record: Record<string, unknown>): ServerRoomMessage | undefined {
   if (!isRoomErrorCode(record.code) || typeof record.message !== "string") {
     return undefined;
@@ -384,6 +459,20 @@ function readPlayerId(value: unknown): string | undefined {
 
 function readNonNegativeInteger(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function readNonNegativeFinite(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function readPlace(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
     return undefined;
   }
   return value;

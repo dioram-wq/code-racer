@@ -5,11 +5,14 @@ import {
   type ErrorRoomMessage,
   type PlayersRoomMessage,
   type ProgressRoomMessage,
+  type RaceResultEntry,
+  type RaceResultsRoomMessage,
   type RaceStartRoomMessage,
   type ServerRoomMessage,
 } from "@code-racer/shared";
 import WebSocket, { WebSocketServer } from "ws";
 import {
+  RACE_LIMIT_MS,
   RoomRegistryError,
   createRoomRegistry,
   type Player,
@@ -37,9 +40,12 @@ import {
  * room. A player who joins while a countdown or a race is already stored
  * receives that race on their socket only: the same `race-start`, then one
  * `progress` frame for each accepted position, in join order. The rest of
- * the room is not sent those frames again. A message that cannot be applied
- * is answered with `{ "type": "error", "code", "message" }` on that socket
- * only.
+ * the room is not sent those frames again. When every player still in the
+ * room has finished, or the race reaches `RACE_LIMIT_MS` after typing
+ * begins, the room is sent `{ "type": "race-results", "roomId", "results" }`
+ * and the race is cleared so another one can start. A message that cannot
+ * be applied is answered with `{ "type": "error", "code", "message" }` on
+ * that socket only.
  *
  * Any member of the room may start. The player id is the one on the join
  * when the client sent one, and a server-assigned id when it did not.
@@ -72,6 +78,7 @@ export function attachRoomServer(
   const createPlayerId = options?.createPlayerId ?? randomUUID;
   const membership = new WeakMap<WebSocket, Membership>();
   const socketsByRoom = new Map<string, Set<WebSocket>>();
+  const raceLimits = new Map<string, ReturnType<typeof setTimeout>>();
   const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_BYTES });
 
   wss.on("connection", (socket) => {
@@ -91,6 +98,7 @@ export function attachRoomServer(
       }
       forget(socket, current);
       broadcastPlayers(current.roomId);
+      publishResults(current.roomId);
     });
 
     // One bad client socket must not crash the process. Close removes the player.
@@ -99,6 +107,13 @@ export function attachRoomServer(
 
   wss.on("error", (error: Error) => {
     console.error(error.message);
+  });
+
+  wss.on("close", () => {
+    for (const timer of raceLimits.values()) {
+      clearTimeout(timer);
+    }
+    raceLimits.clear();
   });
 
   return wss;
@@ -151,6 +166,7 @@ export function attachRoomServer(
       position: progress.position,
       finished: progress.finished,
     });
+    publishResults(current.roomId);
   }
 
   function startRace(socket: WebSocket): void {
@@ -175,6 +191,7 @@ export function attachRoomServer(
       snippet: race.snippet,
       startsAt: race.startsAt,
     });
+    armRaceLimit(current.roomId, race.startsAt);
   }
 
   function join(
@@ -264,6 +281,7 @@ export function attachRoomServer(
     }
     forget(socket, current);
     broadcastPlayers(current.roomId);
+    publishResults(current.roomId);
   }
 
   function remember(socket: WebSocket, roomId: string, playerId: string): void {
@@ -285,13 +303,64 @@ export function attachRoomServer(
         socketsByRoom.delete(current.roomId);
       }
     }
+    let removedRoom = false;
     try {
-      registry.leave(current.roomId, current.playerId);
+      removedRoom = registry.leave(current.roomId, current.playerId) === undefined;
     } catch (error: unknown) {
       if (!(error instanceof RoomRegistryError)) {
         throw error;
       }
     }
+    if (removedRoom) {
+      clearRaceLimit(current.roomId);
+    }
+  }
+
+  /**
+   * Ends the race when everyone still in the room has finished, or the time
+   * limit has been reached. Broadcasts the standings and returns true when
+   * the race ended. A room that should keep racing returns false.
+   */
+  function publishResults(roomId: string): boolean {
+    let results: readonly RaceResultEntry[] | undefined;
+    try {
+      results = registry.concludeRace(roomId);
+    } catch (error: unknown) {
+      if (error instanceof RoomRegistryError) {
+        return false;
+      }
+      throw error;
+    }
+    if (results === undefined) {
+      return false;
+    }
+    clearRaceLimit(roomId);
+    broadcast(roomId, { type: "race-results", roomId, results });
+    return true;
+  }
+
+  function armRaceLimit(roomId: string, startsAt: number): void {
+    clearRaceLimit(roomId);
+    const delay = startsAt + RACE_LIMIT_MS - Date.now();
+    const timer = setTimeout(() => {
+      raceLimits.delete(roomId);
+      try {
+        publishResults(roomId);
+      } catch (error: unknown) {
+        console.error(error instanceof Error ? error.message : "Unknown socket error");
+      }
+    }, Math.max(0, delay));
+    timer.unref();
+    raceLimits.set(roomId, timer);
+  }
+
+  function clearRaceLimit(roomId: string): void {
+    const timer = raceLimits.get(roomId);
+    if (timer === undefined) {
+      return;
+    }
+    clearTimeout(timer);
+    raceLimits.delete(roomId);
   }
 
   function broadcastPlayers(roomId: string): void {
@@ -313,7 +382,7 @@ export function attachRoomServer(
 
   function broadcast(
     roomId: string,
-    message: PlayersRoomMessage | RaceStartRoomMessage | ProgressRoomMessage,
+    message: PlayersRoomMessage | RaceStartRoomMessage | ProgressRoomMessage | RaceResultsRoomMessage,
   ): void {
     const sockets = socketsByRoom.get(roomId);
     if (sockets === undefined) {

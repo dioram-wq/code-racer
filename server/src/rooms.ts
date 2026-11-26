@@ -1,10 +1,12 @@
 import {
+  calculateWpm,
   isLanguage,
   normalizePlayerName,
   normalizeRoomId,
   pickSnippet as pickCatalogSnippet,
   playerNameErrorMessage,
   roomIdErrorMessage,
+  type RaceResultEntry,
   type Snippet,
 } from "@code-racer/shared";
 
@@ -21,7 +23,11 @@ import {
  * move backward, and reaching the end marks the player finished.
  * `listProgress` returns those accepted positions in join order, so a player
  * who arrives during the countdown or the race can be shown the current
- * standings. This module does not open a socket or read from the network.
+ * standings. `concludeRace` ends that race once every player still in the
+ * room has finished, or once it has run for `RACE_LIMIT_MS` after typing
+ * begins. The standings use the shared words-per-minute formula on the
+ * whole snippet and the finish time. The room is then waiting, so another
+ * race can start. This module does not open a socket or read from the network.
  */
 
 /** Characters used in room codes. Omits 0, O, 1, I, and L. */
@@ -35,6 +41,14 @@ export const MIN_RACE_PLAYERS = 2;
 
 /** Milliseconds between a successful start and the instant typing begins. */
 export const RACE_COUNTDOWN_MS = 3000;
+
+/**
+ * How long a race may run after typing begins.
+ *
+ * A player who never finishes would otherwise hold the room. At this age
+ * `concludeRace` ends it and keeps whoever has already finished.
+ */
+export const RACE_LIMIT_MS = 5 * 60 * 1000;
 
 const MAX_CODE_LENGTH = 8;
 const MAX_ALLOCATION_ATTEMPTS = 32;
@@ -151,6 +165,21 @@ export interface RoomRegistry {
    * reported. `finished` is true when the position is the length of the snippet.
    */
   listProgress(code: string): readonly PlayerProgress[];
+  /**
+   * Ends the race when every player still in the room has finished, or when
+   * it has run for `RACE_LIMIT_MS` after `startsAt`. Returns those finishers
+   * in finishing order and leaves the room waiting. A player who left is
+   * omitted, and so is anyone still typing when the limit ends the race.
+   * Returns undefined when the race should keep going, or when no race is
+   * stored. An empty list means the race ended and nobody finished.
+   */
+  concludeRace(code: string): readonly RaceResultEntry[] | undefined;
+}
+
+/** The instant a player first reached the end of the snippet, and the order that happened. */
+interface FinishMark {
+  readonly at: number;
+  readonly seq: number;
 }
 
 interface MutableRoom {
@@ -159,6 +188,10 @@ interface MutableRoom {
   race: RoomRace | undefined;
   /** Accepted character position for each player who has reported one. */
   progress: Map<string, number>;
+  /** First finish for each player still in the room. Cleared with the race. */
+  finishes: Map<string, FinishMark>;
+  /** Next `FinishMark.seq`. Earlier reports rank ahead when the clock matches. */
+  nextFinish: number;
 }
 
 /**
@@ -223,7 +256,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       const member = readPlayer(player);
       assertAvailable(member.id);
       const code = allocateCode();
-      const room: MutableRoom = { code, players: [member], race: undefined, progress: new Map() };
+      const room: MutableRoom = emptyRoom(code, [member]);
       rooms.set(code, room);
       roomByPlayer.set(member.id, code);
       return snapshot(room);
@@ -248,12 +281,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
         roomByPlayer.set(member.id, existing.code);
         return snapshot(existing);
       }
-      const room: MutableRoom = {
-        code: roomId,
-        players: [member],
-        race: undefined,
-        progress: new Map(),
-      };
+      const room: MutableRoom = emptyRoom(roomId, [member]);
       rooms.set(roomId, room);
       roomByPlayer.set(member.id, room.code);
       return snapshot(room);
@@ -271,6 +299,7 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       }
       room.players.splice(index, 1);
       room.progress.delete(id);
+      room.finishes.delete(id);
       roomByPlayer.delete(id);
       if (room.players.length === 0) {
         rooms.delete(room.code);
@@ -323,7 +352,8 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
           "Progress must be a non-negative integer",
         );
       }
-      if (room.race === undefined || readNow(now) < room.race.startsAt) {
+      const instant = readNow(now);
+      if (room.race === undefined || instant < room.race.startsAt) {
         throw new RoomRegistryError("race-not-running", "No race is running in this room");
       }
       const length = room.race.snippet.code.length;
@@ -335,6 +365,10 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
         throw new RoomRegistryError("invalid-progress", "Progress cannot move backward");
       }
       room.progress.set(id, cursor);
+      if (cursor === length && !room.finishes.has(id)) {
+        room.finishes.set(id, { at: instant, seq: room.nextFinish });
+        room.nextFinish += 1;
+      }
       return { playerId: id, position: cursor, finished: cursor === length };
     },
 
@@ -354,7 +388,91 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       }
       return listed;
     },
+
+    concludeRace(code: string): readonly RaceResultEntry[] | undefined {
+      const room = requireRoom(code);
+      if (room.race === undefined) {
+        return undefined;
+      }
+      const instant = readNow(now);
+      if (instant < room.race.startsAt) {
+        return undefined;
+      }
+      const everyoneFinished =
+        room.players.length > 0 &&
+        room.players.every((player) => room.finishes.has(player.id));
+      const capped = instant >= room.race.startsAt + RACE_LIMIT_MS;
+      if (!everyoneFinished && !capped) {
+        return undefined;
+      }
+      const results = standings(room);
+      clearRace(room);
+      return results;
+    },
   };
+}
+
+function emptyRoom(code: string, players: Player[]): MutableRoom {
+  return {
+    code,
+    players,
+    race: undefined,
+    progress: new Map(),
+    finishes: new Map(),
+    nextFinish: 0,
+  };
+}
+
+function clearRace(room: MutableRoom): void {
+  room.race = undefined;
+  room.progress.clear();
+  room.finishes.clear();
+  room.nextFinish = 0;
+}
+
+/**
+ * Finishers still in the room, fastest first.
+ *
+ * The same finish time keeps the order the finishes were accepted. Words per
+ * minute treat the whole snippet as correct, because a finish is the cursor
+ * at the end of that snippet. The figure is not rounded.
+ */
+function standings(room: MutableRoom): RaceResultEntry[] {
+  const race = room.race;
+  if (race === undefined) {
+    return [];
+  }
+  const length = race.snippet.code.length;
+  const ranked: { player: Player; mark: FinishMark }[] = [];
+  for (const player of room.players) {
+    const mark = room.finishes.get(player.id);
+    if (mark === undefined) {
+      continue;
+    }
+    ranked.push({ player, mark });
+  }
+  ranked.sort((left, right) => {
+    if (left.mark.at !== right.mark.at) {
+      return left.mark.at - right.mark.at;
+    }
+    return left.mark.seq - right.mark.seq;
+  });
+  const results: RaceResultEntry[] = [];
+  for (let index = 0; index < ranked.length; index += 1) {
+    const entry = ranked[index];
+    if (entry === undefined) {
+      continue;
+    }
+    const timeMs = entry.mark.at - race.startsAt;
+    results.push({
+      playerId: entry.player.id,
+      name: entry.player.name,
+      place: index + 1,
+      timeMs,
+      wpm: calculateWpm(length, timeMs),
+    });
+  }
+  return results;
 }
 
 function readCodeLength(codeLength: number): number {

@@ -37,6 +37,8 @@ export type {
   ParseClientRoomMessageResult,
   PlayersRoomMessage,
   ProgressRoomMessage,
+  RaceResultEntry,
+  RaceResultsRoomMessage,
   RaceStartRoomMessage,
   ReportProgressMessage,
   RoomErrorCode,
