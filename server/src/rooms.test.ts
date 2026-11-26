@@ -1,8 +1,9 @@
-import { getSnippet, type Snippet } from "@code-racer/shared";
+import { calculateWpm, getSnippet, type Snippet } from "@code-racer/shared";
 import { describe, expect, it } from "vitest";
 import {
   MIN_RACE_PLAYERS,
   RACE_COUNTDOWN_MS,
+  RACE_LIMIT_MS,
   ROOM_CODE_ALPHABET,
   ROOM_CODE_LENGTH,
   type Player,
@@ -648,6 +649,192 @@ describe("listProgress", () => {
     const registry = createRoomRegistry();
 
     expect(() => registry.listProgress("missing")).toThrow(
+      expect.objectContaining({ code: "room-not-found" }),
+    );
+  });
+});
+
+describe("concludeRace", () => {
+  const snippet = passage("js-sum");
+  const cy: Player = { id: "cy", name: "Cy" };
+
+  it("orders finishers by time and keeps the first report when the clock matches", () => {
+    let time = 10_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.join(code, cy);
+    registry.startRace(code);
+    const startsAt = 10_000 + RACE_COUNTDOWN_MS;
+    const length = snippet.code.length;
+
+    time = startsAt + 10_000;
+    registry.reportProgress(code, bea.id, length);
+    registry.reportProgress(code, cy.id, length);
+    time = startsAt + 12_000;
+    expect(registry.reportProgress(code, bea.id, length)).toEqual({
+      playerId: "bea",
+      position: length,
+      finished: true,
+    });
+    time = startsAt + 25_000;
+    registry.reportProgress(code, ada.id, length);
+
+    expect(registry.raceState(code).phase).toBe("racing");
+    const results = registry.concludeRace(code);
+
+    expect(results).toEqual([
+      { playerId: "bea", name: "Bea", place: 1, timeMs: 10_000, wpm: calculateWpm(length, 10_000) },
+      { playerId: "cy", name: "Cy", place: 2, timeMs: 10_000, wpm: calculateWpm(length, 10_000) },
+      { playerId: "ada", name: "Ada", place: 3, timeMs: 25_000, wpm: calculateWpm(length, 25_000) },
+    ]);
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+    expect(registry.listProgress(code)).toEqual([]);
+    expect(registry.concludeRace(code)).toBeUndefined();
+  });
+
+  it("ends when someone leaves and everyone remaining has finished", () => {
+    let time = 5_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.join(code, cy);
+    registry.startRace(code);
+    const startsAt = 5_000 + RACE_COUNTDOWN_MS;
+    const length = snippet.code.length;
+
+    time = startsAt + 10_000;
+    registry.reportProgress(code, ada.id, length);
+    time = startsAt + 16_000;
+    registry.reportProgress(code, bea.id, length);
+    registry.reportProgress(code, cy.id, 2);
+    expect(registry.concludeRace(code)).toBeUndefined();
+
+    registry.leave(code, cy.id);
+
+    expect(registry.concludeRace(code)).toEqual([
+      { playerId: "ada", name: "Ada", place: 1, timeMs: 10_000, wpm: calculateWpm(length, 10_000) },
+      { playerId: "bea", name: "Bea", place: 2, timeMs: 16_000, wpm: calculateWpm(length, 16_000) },
+    ]);
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+    expect(registry.listPlayers(code)).toEqual([ada, bea]);
+  });
+
+  it("keeps the race while someone is still typing and drops a finisher who left", () => {
+    let time = 8_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.join(code, cy);
+    registry.startRace(code);
+    const startsAt = 8_000 + RACE_COUNTDOWN_MS;
+    const length = snippet.code.length;
+
+    time = startsAt + 10_000;
+    registry.reportProgress(code, ada.id, length);
+    registry.reportProgress(code, bea.id, 4);
+    registry.leave(code, ada.id);
+    expect(registry.concludeRace(code)).toBeUndefined();
+    expect(registry.raceState(code).phase).toBe("racing");
+
+    registry.join(code, ada);
+    time = startsAt + 30_000;
+    registry.reportProgress(code, ada.id, length);
+    expect(registry.concludeRace(code)).toBeUndefined();
+    time = startsAt + 36_000;
+    registry.reportProgress(code, bea.id, length);
+    registry.reportProgress(code, cy.id, length);
+
+    expect(registry.concludeRace(`  ${code.toLowerCase()}  `)).toEqual([
+      { playerId: "ada", name: "Ada", place: 1, timeMs: 30_000, wpm: calculateWpm(length, 30_000) },
+      { playerId: "bea", name: "Bea", place: 2, timeMs: 36_000, wpm: calculateWpm(length, 36_000) },
+      { playerId: "cy", name: "Cy", place: 3, timeMs: 36_000, wpm: calculateWpm(length, 36_000) },
+    ]);
+  });
+
+  it("returns to waiting so another race can start", () => {
+    let time = 2_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    const startsAt = 2_000 + RACE_COUNTDOWN_MS;
+    const length = snippet.code.length;
+
+    time = startsAt + 9_000;
+    registry.reportProgress(code, bea.id, length);
+    time = startsAt + 14_000;
+    registry.reportProgress(code, ada.id, length);
+    registry.concludeRace(code);
+
+    expect(() => registry.reportProgress(code, ada.id, length)).toThrow(
+      expect.objectContaining({ code: "race-not-running" }),
+    );
+    expect(registry.listProgress(code)).toEqual([]);
+
+    time = 50_000;
+    const next = registry.startRace(code);
+    expect(next).toEqual({ snippet, startsAt: 50_000 + RACE_COUNTDOWN_MS });
+    expect(registry.raceState(code)).toEqual({ phase: "countdown", race: next });
+
+    time = next.startsAt + 4_000;
+    registry.reportProgress(code, ada.id, length);
+    time = next.startsAt + 7_000;
+    registry.reportProgress(code, bea.id, length);
+
+    expect(registry.concludeRace(code)).toEqual([
+      { playerId: "ada", name: "Ada", place: 1, timeMs: 4_000, wpm: calculateWpm(length, 4_000) },
+      { playerId: "bea", name: "Bea", place: 2, timeMs: 7_000, wpm: calculateWpm(length, 7_000) },
+    ]);
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+  });
+
+  it("ends at the time limit and omits anyone still typing", () => {
+    let time = 1_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    const startsAt = 1_000 + RACE_COUNTDOWN_MS;
+    const length = snippet.code.length;
+
+    expect(RACE_LIMIT_MS).toBe(5 * 60 * 1000);
+    time = startsAt - 1;
+    expect(registry.concludeRace(code)).toBeUndefined();
+    expect(registry.raceState(code).phase).toBe("countdown");
+
+    time = startsAt + 8_000;
+    registry.reportProgress(code, ada.id, length);
+    registry.reportProgress(code, bea.id, 3);
+    time = startsAt + RACE_LIMIT_MS - 1;
+    expect(registry.concludeRace(code)).toBeUndefined();
+    expect(registry.reportProgress(code, bea.id, 5).position).toBe(5);
+
+    time = startsAt + RACE_LIMIT_MS;
+    expect(registry.concludeRace(code)).toEqual([
+      { playerId: "ada", name: "Ada", place: 1, timeMs: 8_000, wpm: calculateWpm(length, 8_000) },
+    ]);
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+    expect(registry.listPlayers(code)).toEqual([ada, bea]);
+    expect(registry.startRace(code).startsAt).toBe(time + RACE_COUNTDOWN_MS);
+  });
+
+  it("ends at the limit with an empty list when nobody finished", () => {
+    let time = 4_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.startRace(code);
+    const startsAt = 4_000 + RACE_COUNTDOWN_MS;
+
+    time = startsAt + 1_000;
+    registry.reportProgress(code, ada.id, 2);
+    time = startsAt + RACE_LIMIT_MS;
+
+    expect(registry.concludeRace(code)).toEqual([]);
+    expect(registry.raceState(code)).toEqual({ phase: "waiting" });
+    expect(registry.listProgress(code)).toEqual([]);
+    expect(registry.startRace(code).snippet).toEqual(snippet);
+  });
+
+  it("reports a missing room", () => {
+    const registry = createRoomRegistry();
+
+    expect(() => registry.concludeRace("missing")).toThrow(
       expect.objectContaining({ code: "room-not-found" }),
     );
   });

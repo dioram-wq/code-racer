@@ -300,6 +300,110 @@ describe("applyServerRoomMessage", () => {
     ]);
   });
 
+  it("parses race results and returns the room to idle", () => {
+    const raw = JSON.stringify({
+      type: "race-results",
+      roomId: " ab12 ",
+      results: [
+        { playerId: " bea ", name: "  Bea  ", place: 1, timeMs: 12_000, wpm: 40.5, extra: true },
+        { playerId: "ada", name: "Ada", place: 2, timeMs: 0, wpm: 0 },
+      ],
+      extra: 1,
+    });
+
+    expect(parseServerRoomMessage(raw)).toEqual({
+      type: "race-results",
+      roomId: "AB12",
+      results: [
+        { playerId: "bea", name: "Bea", place: 1, timeMs: 12_000, wpm: 40.5 },
+        { playerId: "ada", name: "Ada", place: 2, timeMs: 0, wpm: 0 },
+      ],
+    });
+
+    let state = applyServerRoomMessage(racing(), progressFrame("ada", 1, false));
+    state = applyServerRoomMessage(state, progressFrame("bea", 2, true));
+    const idle = applyServerRoomMessage(state, raw);
+
+    expect(idle).toEqual({
+      roomId: "AB12",
+      players: [
+        { id: "ada", name: "Ada", position: 0, finished: false },
+        { id: "bea", name: "Bea", position: 0, finished: false },
+      ],
+      snippet: undefined,
+      startsAt: undefined,
+    });
+    expect(applyServerRoomMessage(idle, raw)).toBe(idle);
+
+    const again = applyServerRoomMessage(idle, raceStartFrame());
+    expect(again.snippet).toEqual(snippet);
+    expect(again.startsAt).toBe(startsAt);
+    expect(again.players).toEqual([
+      { id: "ada", name: "Ada", position: 0, finished: false },
+      { id: "bea", name: "Bea", position: 0, finished: false },
+    ]);
+  });
+
+  it("ignores race results that do not belong to this room or cannot be read", () => {
+    const moved = applyServerRoomMessage(racing(), progressFrame("ada", 1, false));
+    const elsewhere = JSON.stringify({
+      type: "race-results",
+      roomId: "CD34",
+      results: [{ playerId: "ada", name: "Ada", place: 1, timeMs: 1, wpm: 1 }],
+    });
+    expect(applyServerRoomMessage(moved, elsewhere)).toBe(moved);
+
+    const bad = [
+      { type: "race-results", roomId: "AB12" },
+      { type: "race-results", roomId: "AB12", results: {} },
+      {
+        type: "race-results",
+        roomId: "AB12",
+        results: [{ playerId: "ada", name: "Ada", place: 0, timeMs: 1, wpm: 1 }],
+      },
+      {
+        type: "race-results",
+        roomId: "AB12",
+        results: [{ playerId: "ada", name: "Ada", place: 1, timeMs: -1, wpm: 1 }],
+      },
+      {
+        type: "race-results",
+        roomId: "AB12",
+        results: [{ playerId: "ada", name: "Ada", place: 1, timeMs: 1, wpm: Number.POSITIVE_INFINITY }],
+      },
+      {
+        type: "race-results",
+        roomId: "AB12",
+        results: [{ playerId: "ada", name: " ", place: 1, timeMs: 1, wpm: 1 }],
+      },
+      {
+        type: "race-results",
+        roomId: "AB12",
+        results: [
+          { playerId: "ada", name: "Ada", place: 1, timeMs: 1, wpm: 1 },
+          { playerId: "ada", name: "Ada", place: 2, timeMs: 2, wpm: 1 },
+        ],
+      },
+      { type: "race-results", roomId: "ab-12", results: [] },
+    ];
+    for (const message of bad) {
+      const raw = JSON.stringify(message);
+      expect(parseServerRoomMessage(raw)).toBeUndefined();
+      expect(applyServerRoomMessage(moved, raw)).toBe(moved);
+    }
+
+    const empty = applyServerRoomMessage(
+      moved,
+      JSON.stringify({ type: "race-results", roomId: "AB12", results: [] }),
+    );
+    expect(empty.snippet).toBeUndefined();
+    expect(empty.startsAt).toBeUndefined();
+    expect(empty.players).toEqual([
+      { id: "ada", name: "Ada", position: 0, finished: false },
+      { id: "bea", name: "Bea", position: 0, finished: false },
+    ]);
+  });
+
   it("keeps a race that arrives before the roster", () => {
     const started = applyServerRoomMessage(createRaceRoomState(), raceStartFrame("ab12"));
     const seated = applyServerRoomMessage(started, playersFrame([ada, bea]));

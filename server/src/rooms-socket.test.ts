@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { getSnippet, playerIdErrorMessage, type Snippet } from "@code-racer/shared";
+import { calculateWpm, getSnippet, playerIdErrorMessage, type Snippet } from "@code-racer/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { type WebSocketServer } from "ws";
 import { createApp } from "./app.js";
@@ -935,6 +935,149 @@ describe("room sockets", () => {
     expect(JSON.parse(await adaSeesBea)).toEqual(both);
     expect(JSON.parse(await beaInbox.next())).toEqual(both);
   });
+
+  it("broadcasts results in finishing order and then accepts another start", async () => {
+    const clock = movableClock();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+
+    const adaSeesRace = adaInbox.next();
+    const beaSeesRace = beaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaSeesRace;
+
+    const length = clock.snippet.code.length;
+    const startsAt = 20_000 + RACE_COUNTDOWN_MS;
+    clock.at(startsAt + 12_000);
+    const adaSeesBea = adaInbox.next();
+    const beaSeesFinish = beaInbox.next();
+    bea.send(json({ type: "progress", position: length }));
+    const beaFinished = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p2",
+      position: length,
+      finished: true,
+    };
+    expect(JSON.parse(await adaSeesBea)).toEqual(beaFinished);
+    expect(JSON.parse(await beaSeesFinish)).toEqual(beaFinished);
+    expect(running.registry.raceState("AB12").phase).toBe("racing");
+
+    clock.at(startsAt + 18_000);
+    const adaSeesFinish = adaInbox.next();
+    const beaSeesAda = beaInbox.next();
+    ada.send(json({ type: "progress", position: length }));
+    const adaFinished = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: length,
+      finished: true,
+    };
+    expect(JSON.parse(await adaSeesFinish)).toEqual(adaFinished);
+    expect(JSON.parse(await beaSeesAda)).toEqual(adaFinished);
+
+    const results = {
+      type: "race-results",
+      roomId: "AB12",
+      results: [
+        {
+          playerId: "p2",
+          name: "Bea",
+          place: 1,
+          timeMs: 12_000,
+          wpm: calculateWpm(length, 12_000),
+        },
+        {
+          playerId: "p1",
+          name: "Ada",
+          place: 2,
+          timeMs: 18_000,
+          wpm: calculateWpm(length, 18_000),
+        },
+      ],
+    };
+    expect(JSON.parse(await adaInbox.next())).toEqual(results);
+    expect(JSON.parse(await beaInbox.next())).toEqual(results);
+    expect(running.registry.raceState("AB12")).toEqual({ phase: "waiting" });
+    expect(running.registry.listProgress("AB12")).toEqual([]);
+
+    const againAt = clock.time() + RACE_COUNTDOWN_MS;
+    const adaSeesNext = adaInbox.next();
+    const beaSeesNext = beaInbox.next();
+    bea.send(json({ type: "start" }));
+    const next = {
+      type: "race-start",
+      roomId: "AB12",
+      snippet: clock.snippet,
+      startsAt: againAt,
+    };
+    expect(JSON.parse(await adaSeesNext)).toEqual(next);
+    expect(JSON.parse(await beaSeesNext)).toEqual(next);
+    expect(running.registry.raceState("AB12")).toEqual({
+      phase: "countdown",
+      race: { snippet: clock.snippet, startsAt: againAt },
+    });
+  });
+
+  it("broadcasts results when a player leaves and everyone remaining has finished", async () => {
+    const clock = movableClock();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+
+    const adaSeesRace = adaInbox.next();
+    const beaSeesRace = beaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaSeesRace;
+
+    const length = clock.snippet.code.length;
+    const startsAt = 20_000 + RACE_COUNTDOWN_MS;
+    clock.at(startsAt + 9_000);
+    const beaSeesAda = beaInbox.next();
+    ada.send(json({ type: "progress", position: length }));
+    await adaInbox.next();
+    expect(JSON.parse(await beaSeesAda)).toEqual({
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: length,
+      finished: true,
+    });
+
+    const adaSeesLeave = adaInbox.next();
+    bea.send(json({ type: "leave" }));
+    expect(JSON.parse(await adaSeesLeave)).toEqual({
+      type: "players",
+      roomId: "AB12",
+      players: [{ id: "p1", name: "Ada" }],
+    });
+    expect(JSON.parse(await adaInbox.next())).toEqual({
+      type: "race-results",
+      roomId: "AB12",
+      results: [
+        {
+          playerId: "p1",
+          name: "Ada",
+          place: 1,
+          timeMs: 9_000,
+          wpm: calculateWpm(length, 9_000),
+        },
+      ],
+    });
+    expect(running.registry.raceState("AB12")).toEqual({ phase: "waiting" });
+    expect(running.registry.listPlayers("AB12")).toEqual([{ id: "p1", name: "Ada" }]);
+    expect(running.registry.concludeRace("AB12")).toBeUndefined();
+  });
 });
 
 async function joinBoth(
@@ -1105,6 +1248,30 @@ interface ClockedRace {
   snippet: Snippet;
   /** Moves the clock from the countdown to the instant typing begins. */
   startTyping: () => void;
+}
+
+function movableClock(start = 20_000): {
+  registry: RoomRegistry;
+  snippet: Snippet;
+  at: (time: number) => void;
+  time: () => number;
+} {
+  const snippet = passage("js-sum");
+  let time = start;
+  const registry = createRoomRegistry({
+    now: () => time,
+    pickSnippet: () => snippet,
+  });
+  return {
+    registry,
+    snippet,
+    at(next: number) {
+      time = next;
+    },
+    time() {
+      return time;
+    },
+  };
 }
 
 function clockedRace(): ClockedRace {
