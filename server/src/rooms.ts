@@ -18,8 +18,10 @@ import {
  * snippet, stores a countdown, and then reports that race as racing once
  * `startsAt` is reached. While the race is racing, a player can report how
  * many characters they have typed. That position cannot pass the snippet or
- * move backward, and reaching the end marks the player finished. This module
- * does not open a socket or read from the network.
+ * move backward, and reaching the end marks the player finished.
+ * `listProgress` returns those accepted positions in join order, so a player
+ * who arrives during the countdown or the race can be shown the current
+ * standings. This module does not open a socket or read from the network.
  */
 
 /** Characters used in room codes. Omits 0, O, 1, I, and L. */
@@ -143,6 +145,12 @@ export interface RoomRegistry {
    * backward. The player is finished when it reaches the end of the snippet.
    */
   reportProgress(code: string, playerId: string, position: number): PlayerProgress;
+  /**
+   * Accepted positions in the current race, in join order. A player who has
+   * not reported is omitted. Empty when no race is stored or nobody has
+   * reported. `finished` is true when the position is the length of the snippet.
+   */
+  listProgress(code: string): readonly PlayerProgress[];
 }
 
 interface MutableRoom {
@@ -328,6 +336,23 @@ export function createRoomRegistry(options?: CreateRoomRegistryOptions): RoomReg
       }
       room.progress.set(id, cursor);
       return { playerId: id, position: cursor, finished: cursor === length };
+    },
+
+    listProgress(code: string): readonly PlayerProgress[] {
+      const room = requireRoom(code);
+      if (room.race === undefined) {
+        return [];
+      }
+      const length = room.race.snippet.code.length;
+      const listed: PlayerProgress[] = [];
+      for (const player of room.players) {
+        const position = room.progress.get(player.id);
+        if (position === undefined) {
+          continue;
+        }
+        listed.push({ playerId: player.id, position, finished: position === length });
+      }
+      return listed;
     },
   };
 }

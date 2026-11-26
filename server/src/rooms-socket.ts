@@ -15,6 +15,7 @@ import {
   type Player,
   type PlayerProgress,
   type RoomRace,
+  type RoomRaceState,
   type RoomRegistry,
 } from "./rooms.js";
 
@@ -33,8 +34,12 @@ import {
  * on the room, and broadcasts `{ "type": "race-start", "roomId", "snippet",
  * "startsAt" }` to those same sockets. A progress report is accepted only
  * while that race is running, and the accepted position is broadcast to the
- * room. A message that cannot be applied is answered with
- * `{ "type": "error", "code", "message" }` on that socket only.
+ * room. A player who joins while a countdown or a race is already stored
+ * receives that race on their socket only: the same `race-start`, then one
+ * `progress` frame for each accepted position, in join order. The rest of
+ * the room is not sent those frames again. A message that cannot be applied
+ * is answered with `{ "type": "error", "code", "message" }` on that socket
+ * only.
  *
  * Any member of the room may start. The player id is the one on the join
  * when the client sent one, and a server-assigned id when it did not.
@@ -202,6 +207,53 @@ export function attachRoomServer(
 
     remember(socket, room.code, playerId);
     broadcastPlayers(room.code);
+    sendRaceInProgress(socket, room.code);
+  }
+
+  /**
+   * The race already stored on `roomId`, for the socket that just joined.
+   *
+   * `race-start` is sent first so the client learns the snippet before any
+   * position. A second copy is not broadcast: the clients already in the room
+   * would treat it as a new race and clear the positions they are showing.
+   */
+  function sendRaceInProgress(socket: WebSocket, roomId: string): void {
+    let state: RoomRaceState;
+    try {
+      state = registry.raceState(roomId);
+    } catch (error: unknown) {
+      if (error instanceof RoomRegistryError) {
+        return;
+      }
+      throw error;
+    }
+    if (state.phase === "waiting") {
+      return;
+    }
+    send(socket, {
+      type: "race-start",
+      roomId,
+      snippet: state.race.snippet,
+      startsAt: state.race.startsAt,
+    });
+    let progress: readonly PlayerProgress[];
+    try {
+      progress = registry.listProgress(roomId);
+    } catch (error: unknown) {
+      if (error instanceof RoomRegistryError) {
+        return;
+      }
+      throw error;
+    }
+    for (const entry of progress) {
+      send(socket, {
+        type: "progress",
+        roomId,
+        playerId: entry.playerId,
+        position: entry.position,
+        finished: entry.finished,
+      });
+    }
   }
 
   function leave(socket: WebSocket): void {

@@ -6,8 +6,10 @@
  * one. The server broadcasts `players` to the sockets still in the room when
  * membership changes, and broadcasts `race-start` (a snippet and the instant
  * typing begins) when a race is started. While that race is running, each
- * accepted `progress` report is broadcast to the same sockets. The server
- * sends `error` only to the socket that sent a message it cannot apply.
+ * accepted `progress` report is broadcast to the same sockets. A player who
+ * joins during the countdown or the race receives that `race-start` and one
+ * `progress` frame for each accepted position, on their socket only. The
+ * server sends `error` only to the socket that sent a message it cannot apply.
  *
  * Room ids are 1 to 16 letters or digits, matched without case. Typed ids may
  * use every digit, including characters a generated room code leaves out.
