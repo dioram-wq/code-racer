@@ -308,7 +308,9 @@ describe("room sockets", () => {
     expect(JSON.parse(await deeInbox.next())).toEqual(others);
   });
 
-  it("does not replay an in-progress race to a player who joins later", async () => {
+  it("sends the countdown race to a player who joins later", async () => {
+    const chosen = passage("ts-clamp");
+    const now = 10_000;
     const running = await start({ registry: fixedRegistry() });
     const ada = await connect(running);
     const bea = await connect(running);
@@ -336,8 +338,208 @@ describe("room sockets", () => {
       ],
     };
     expect(JSON.parse(await camInbox.next())).toEqual(players);
+    expect(JSON.parse(await camInbox.next())).toEqual({
+      type: "race-start",
+      roomId: "AB12",
+      snippet: chosen,
+      startsAt: now + RACE_COUNTDOWN_MS,
+    });
     expect(JSON.parse(await adaSeesCam)).toEqual(players);
     expect(JSON.parse(await beaSeesCam)).toEqual(players);
+
+    const adaSeesLeave = adaInbox.next();
+    const camSeesLeave = camInbox.next();
+    bea.send(json({ type: "leave" }));
+    const withoutBea = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "p1", name: "Ada" },
+        { id: "p3", name: "Cam" },
+      ],
+    };
+    expect(JSON.parse(await adaSeesLeave)).toEqual(withoutBea);
+    expect(JSON.parse(await camSeesLeave)).toEqual(withoutBea);
+  });
+
+  it("sends the snippet and current progress to a player who joins mid-race", async () => {
+    const clock = clockedRace();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const dee = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    const deeInbox = new Inbox(dee);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+
+    const adaSeesDee = adaInbox.next();
+    const beaSeesDee = beaInbox.next();
+    dee.send(json({ type: "join", roomId: "AB12", name: "Dee" }));
+    const three = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "p1", name: "Ada" },
+        { id: "p2", name: "Bea" },
+        { id: "p3", name: "Dee" },
+      ],
+    };
+    expect(JSON.parse(await adaSeesDee)).toEqual(three);
+    expect(JSON.parse(await beaSeesDee)).toEqual(three);
+    expect(JSON.parse(await deeInbox.next())).toEqual(three);
+
+    const adaSeesRace = adaInbox.next();
+    const beaSeesRace = beaInbox.next();
+    const deeSeesRace = deeInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaSeesRace;
+    await deeSeesRace;
+    clock.startTyping();
+
+    const length = clock.snippet.code.length;
+    const adaMoves = adaInbox.next();
+    const beaSeesAda = beaInbox.next();
+    const deeSeesAda = deeInbox.next();
+    ada.send(json({ type: "progress", position: 4 }));
+    await adaMoves;
+    await beaSeesAda;
+    await deeSeesAda;
+    const beaFinishes = beaInbox.next();
+    const adaSeesBea = adaInbox.next();
+    const deeSeesBea = deeInbox.next();
+    bea.send(json({ type: "progress", position: length }));
+    await beaFinishes;
+    await adaSeesBea;
+    await deeSeesBea;
+
+    const cam = await connect(running);
+    const camInbox = new Inbox(cam);
+    const adaSeesCam = adaInbox.next();
+    const beaSeesCam = beaInbox.next();
+    const deeSeesCam = deeInbox.next();
+    cam.send(json({ type: "join", roomId: "ab12", name: "Cam" }));
+
+    const players = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "p1", name: "Ada" },
+        { id: "p2", name: "Bea" },
+        { id: "p3", name: "Dee" },
+        { id: "p4", name: "Cam" },
+      ],
+    };
+    expect(JSON.parse(await camInbox.next())).toEqual(players);
+    expect(JSON.parse(await camInbox.next())).toEqual({
+      type: "race-start",
+      roomId: "AB12",
+      snippet: clock.snippet,
+      startsAt: 20_000 + RACE_COUNTDOWN_MS,
+    });
+    expect(JSON.parse(await camInbox.next())).toEqual({
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: 4,
+      finished: false,
+    });
+    expect(JSON.parse(await camInbox.next())).toEqual({
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p2",
+      position: length,
+      finished: true,
+    });
+    expect(JSON.parse(await adaSeesCam)).toEqual(players);
+    expect(JSON.parse(await beaSeesCam)).toEqual(players);
+    expect(JSON.parse(await deeSeesCam)).toEqual(players);
+
+    const camSeesLive = camInbox.next();
+    ada.send(json({ type: "progress", position: 6 }));
+    expect(JSON.parse(await camSeesLive)).toEqual({
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p1",
+      position: 6,
+      finished: false,
+    });
+  });
+
+  it("sends the race to a player who rejoins without their old position", async () => {
+    const clock = clockedRace();
+    const running = await start({ registry: clock.registry });
+    const ada = await connect(running);
+    const bea = await connect(running);
+    const adaInbox = new Inbox(ada);
+    const beaInbox = new Inbox(bea);
+    await joinBoth(ada, adaInbox, bea, beaInbox);
+
+    const adaSeesRace = adaInbox.next();
+    const beaSeesRace = beaInbox.next();
+    ada.send(json({ type: "start" }));
+    await adaSeesRace;
+    await beaSeesRace;
+    clock.startTyping();
+
+    const length = clock.snippet.code.length;
+    ada.send(json({ type: "progress", position: length }));
+    await adaInbox.next();
+    await beaInbox.next();
+    bea.send(json({ type: "progress", position: 2 }));
+    await adaInbox.next();
+    await beaInbox.next();
+
+    const beaSeesLeave = beaInbox.next();
+    ada.send(json({ type: "leave" }));
+    expect(JSON.parse(await beaSeesLeave)).toEqual({
+      type: "players",
+      roomId: "AB12",
+      players: [{ id: "p2", name: "Bea" }],
+    });
+
+    const again = await connect(running);
+    const againInbox = new Inbox(again);
+    const beaSeesReturn = beaInbox.next();
+    again.send(json({ type: "join", roomId: "AB12", name: "Ada" }));
+
+    const players = {
+      type: "players",
+      roomId: "AB12",
+      players: [
+        { id: "p2", name: "Bea" },
+        { id: "p3", name: "Ada" },
+      ],
+    };
+    expect(JSON.parse(await againInbox.next())).toEqual(players);
+    expect(JSON.parse(await againInbox.next())).toEqual({
+      type: "race-start",
+      roomId: "AB12",
+      snippet: clock.snippet,
+      startsAt: 20_000 + RACE_COUNTDOWN_MS,
+    });
+    expect(JSON.parse(await againInbox.next())).toEqual({
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p2",
+      position: 2,
+      finished: false,
+    });
+    expect(JSON.parse(await beaSeesReturn)).toEqual(players);
+
+    const againSeesLive = againInbox.next();
+    const beaSeesLive = beaInbox.next();
+    bea.send(json({ type: "progress", position: 3 }));
+    const live = {
+      type: "progress",
+      roomId: "AB12",
+      playerId: "p2",
+      position: 3,
+      finished: false,
+    };
+    expect(JSON.parse(await againSeesLive)).toEqual(live);
+    expect(JSON.parse(await beaSeesLive)).toEqual(live);
   });
 
   it("rejects a start when the socket is outside a room or the room has one player", async () => {

@@ -281,6 +281,25 @@ describe("applyServerRoomMessage", () => {
     expect(applyServerRoomMessage(moved, JSON.stringify({ type: "wave" }))).toBe(moved);
   });
 
+  it("folds a late join into the snippet and the current standings", () => {
+    let state = applyServerRoomMessage(
+      createRaceRoomState(),
+      playersFrame([ada, bea, { id: "cy", name: "Cy" }]),
+    );
+    state = applyServerRoomMessage(state, raceStartFrame());
+    state = applyServerRoomMessage(state, progressFrame("ada", 1, false));
+    state = applyServerRoomMessage(state, progressFrame("bea", 2, true));
+
+    expect(state.roomId).toBe("AB12");
+    expect(state.snippet).toEqual(snippet);
+    expect(state.startsAt).toBe(startsAt);
+    expect(state.players).toEqual([
+      { id: "ada", name: "Ada", position: 1, finished: false },
+      { id: "bea", name: "Bea", position: 2, finished: true },
+      { id: "cy", name: "Cy", position: 0, finished: false },
+    ]);
+  });
+
   it("keeps a race that arrives before the roster", () => {
     const started = applyServerRoomMessage(createRaceRoomState(), raceStartFrame("ab12"));
     const seated = applyServerRoomMessage(started, playersFrame([ada, bea]));

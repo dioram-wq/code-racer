@@ -593,6 +593,66 @@ describe("reportProgress", () => {
   });
 });
 
+describe("listProgress", () => {
+  const snippet = passage("js-sum");
+
+  it("is empty while the room is waiting or counting down", () => {
+    let time = 1_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+
+    expect(registry.listProgress(code)).toEqual([]);
+    registry.startRace(code);
+    expect(registry.raceState(code).phase).toBe("countdown");
+    expect(registry.listProgress(`  ${code.toLowerCase()}  `)).toEqual([]);
+
+    time = 1_000 + RACE_COUNTDOWN_MS;
+    expect(registry.listProgress(code)).toEqual([]);
+  });
+
+  it("lists accepted positions in join order with finished flags", () => {
+    let time = 1_000;
+    const registry = createRoomRegistry({ now: () => time, pickSnippet: () => snippet });
+    const code = twoPlayers(registry);
+    registry.join(code, { id: "cy", name: "Cy" });
+    registry.startRace(code);
+    time = 1_000 + RACE_COUNTDOWN_MS;
+
+    registry.reportProgress(code, bea.id, snippet.code.length);
+    registry.reportProgress(code, ada.id, 0);
+    registry.reportProgress(code, ada.id, 3);
+
+    const listed = registry.listProgress(code);
+    expect(listed).toEqual([
+      { playerId: "ada", position: 3, finished: false },
+      { playerId: "bea", position: snippet.code.length, finished: true },
+    ]);
+    const first = listed[0];
+    if (first === undefined) {
+      throw new Error("expected Ada's progress");
+    }
+    (first as { position: number }).position = 9;
+    expect(registry.listProgress(code)[0]).toEqual({
+      playerId: "ada",
+      position: 3,
+      finished: false,
+    });
+
+    registry.leave(code, ada.id);
+    expect(registry.listProgress(code)).toEqual([
+      { playerId: "bea", position: snippet.code.length, finished: true },
+    ]);
+  });
+
+  it("reports a missing room", () => {
+    const registry = createRoomRegistry();
+
+    expect(() => registry.listProgress("missing")).toThrow(
+      expect.objectContaining({ code: "room-not-found" }),
+    );
+  });
+});
+
 function passage(id: string): Snippet {
   const snippet = getSnippet(id);
   if (snippet === undefined) {
