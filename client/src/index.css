@@ -299,3 +299,45 @@ body {
 .standings-player[data-finished="true"] .standings-status {
   color: var(--amber);
 }
+
+.results {
+  margin: 1rem 0 0;
+}
+
+.results-label,
+.results-empty {
+  margin: 0;
+  color: var(--dim);
+}
+
+.results-empty {
+  margin-top: 0.35rem;
+}
+
+.results-table {
+  margin: 0.35rem 0 0;
+  border-collapse: collapse;
+  font: inherit;
+}
+
+.results-table th {
+  padding: 0 1rem 0.2rem 0;
+  color: var(--dim);
+  font-weight: normal;
+  text-align: left;
+}
+
+.results-table td {
+  padding: 0.12rem 1rem 0.12rem 0;
+  color: var(--text);
+}
+
+.results-mark {
+  display: inline-block;
+  width: 1ch;
+  color: var(--amber);
+}
+
+.results-table tr[data-self="true"] td {
+  color: var(--amber);
+}

@@ -17,6 +17,7 @@ import { useRoomConnection, type RoomJoinRequest } from "./net/use-room-connecti
 import { useRaceProgress } from "./net/use-race-progress.js";
 import { raceCharacters } from "./race-characters.js";
 import { adoptRacePassage, racePassageIsOnScreen } from "./race-room.js";
+import { RaceResults } from "./race-results.js";
 import { RaceStandings } from "./race-standings.js";
 import { RoomJoin } from "./room-join.js";
 import {
@@ -334,6 +335,7 @@ export function App() {
         )}
       </pre>
       <RaceStandings rows={others} />
+      <RaceResults results={room.results} selfId={connection.selfId} />
       <p className={stats.finished ? "hint result" : "hint"} aria-live="polite">
         {formatPassageResult(stats.resultLabel)}
       </p>

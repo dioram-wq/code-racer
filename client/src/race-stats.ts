@@ -125,7 +125,7 @@ function elapsedMilliseconds(timing: RaceTiming, now: number): number {
 }
 
 /** `12.4s` under a minute, then `1:05.2`. Tenths are floored, not rounded up. */
-function formatElapsed(elapsedMs: number): string {
+export function formatElapsed(elapsedMs: number): string {
   const tenthsTotal = Math.floor(elapsedMs / 100);
   const minutes = Math.floor(tenthsTotal / 600);
   const seconds = Math.floor(tenthsTotal / 10) % 60;

@@ -245,6 +245,7 @@ describe("applyServerRoomMessage", () => {
       players: [{ id: "cy", name: "Cy", position: 0, finished: false }],
       snippet: undefined,
       startsAt: undefined,
+      results: undefined,
     });
     expect(moved.players[0]).toEqual({ id: "ada", name: "Ada", position: 1, finished: false });
   });
@@ -332,6 +333,10 @@ describe("applyServerRoomMessage", () => {
       ],
       snippet: undefined,
       startsAt: undefined,
+      results: [
+        { playerId: "bea", name: "Bea", place: 1, timeMs: 12_000, wpm: 40.5 },
+        { playerId: "ada", name: "Ada", place: 2, timeMs: 0, wpm: 0 },
+      ],
     });
     expect(applyServerRoomMessage(idle, raw)).toBe(idle);
 

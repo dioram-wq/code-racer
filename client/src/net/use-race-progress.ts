@@ -151,7 +151,8 @@ function foldFrames(current: RaceRoomState, frames: readonly string[] | undefine
       current.roomId === undefined &&
       current.players.length === 0 &&
       current.snippet === undefined &&
-      current.startsAt === undefined
+      current.startsAt === undefined &&
+      current.results === undefined
     ) {
       return current;
     }

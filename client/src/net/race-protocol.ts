@@ -4,9 +4,10 @@
  * `progressMessage` turns the typing cursor into the progress report the
  * server accepts. `applyServerRoomMessage` folds a server frame into the
  * players still in the room, the race snippet, and each player's position
- * and finished flag. A `race-results` frame returns the room to idle: the
- * snippet is cleared and every player goes back to the start, so another
- * race can be started. The places themselves are not stored. A frame that
+ * and finished flag. A `race-results` frame stores that finishing order and
+ * returns the room to idle: the snippet is cleared and every player goes
+ * back to the start, so another race can be started. The next race-start,
+ * or a player list for a different room, clears those places. A frame that
  * is not valid JSON, or not a players, race-start, progress, race-results,
  * or error message, is ignored.
  *
@@ -41,13 +42,18 @@ export interface RacePlayerProgress {
  * What the client has learned from room broadcasts.
  *
  * `snippet` and `startsAt` stay unset until a race-start frame arrives.
- * Players who have not reported progress are at position 0.
+ * Players who have not reported progress are at position 0. `results` stays
+ * unset until a race-results frame for this room, and is cleared when the
+ * next race starts or the room changes. An empty list means that race ended
+ * and nobody finished.
  */
 export interface RaceRoomState {
   readonly roomId: string | undefined;
   readonly players: readonly RacePlayerProgress[];
   readonly snippet: Snippet | undefined;
   readonly startsAt: number | undefined;
+  /** Finishing order from the latest `race-results` frame. Server field names. */
+  readonly results: readonly RaceResultEntry[] | undefined;
 }
 
 const ROOM_ERROR_CODES: Record<RoomErrorCode, true> = {
@@ -69,6 +75,7 @@ export function createRaceRoomState(): RaceRoomState {
     players: [],
     snippet: undefined,
     startsAt: undefined,
+    results: undefined,
   };
 }
 
@@ -126,10 +133,10 @@ export function parseServerRoomMessage(raw: string): ServerRoomMessage | undefin
  * the snippet and sets every remaining player back to 0. A `progress` frame
  * stores that player's position and finished flag when they are still in the
  * room, the room matches, and the position does not move backward or run
- * past the snippet. A `race-results` frame clears the snippet and sets every
- * remaining player back to the start. An `error` is for the socket that sent
- * a bad report, so it leaves this state unchanged. The same state is returned
- * when nothing changes.
+ * past the snippet. A `race-results` frame stores that finishing order, clears
+ * the snippet, and sets every remaining player back to the start. An `error`
+ * is for the socket that sent a bad report, so it leaves this state unchanged.
+ * The same state is returned when nothing changes.
  */
 export function reduceRaceRoom(state: RaceRoomState, message: ServerRoomMessage): RaceRoomState {
   switch (message.type) {
@@ -140,7 +147,7 @@ export function reduceRaceRoom(state: RaceRoomState, message: ServerRoomMessage)
     case "progress":
       return applyProgress(state, message);
     case "race-results":
-      return applyRaceResults(state, message.roomId);
+      return applyRaceResults(state, message.roomId, message.results);
     case "error":
       return state;
   }
@@ -176,9 +183,15 @@ function applyPlayers(
     return state;
   }
   if (roomChanged) {
-    return { roomId, players, snippet: undefined, startsAt: undefined };
+    return { roomId, players, snippet: undefined, startsAt: undefined, results: undefined };
   }
-  return { roomId, players, snippet: state.snippet, startsAt: state.startsAt };
+  return {
+    roomId,
+    players,
+    snippet: state.snippet,
+    startsAt: state.startsAt,
+    results: state.results,
+  };
 }
 
 function applyRaceStart(
@@ -196,15 +209,20 @@ function applyRaceStart(
   if (
     state.roomId === roomId &&
     state.startsAt === startsAt &&
+    state.results === undefined &&
     sameSnippet(state.snippet, snippet) &&
     samePlayers(state.players, players)
   ) {
     return state;
   }
-  return { roomId, players, snippet, startsAt };
+  return { roomId, players, snippet, startsAt, results: undefined };
 }
 
-function applyRaceResults(state: RaceRoomState, roomId: string): RaceRoomState {
+function applyRaceResults(
+  state: RaceRoomState,
+  roomId: string,
+  results: readonly RaceResultEntry[],
+): RaceRoomState {
   if (state.roomId !== undefined && state.roomId !== roomId) {
     return state;
   }
@@ -215,11 +233,12 @@ function applyRaceResults(state: RaceRoomState, roomId: string): RaceRoomState {
     state.roomId === roomId &&
     state.snippet === undefined &&
     state.startsAt === undefined &&
-    samePlayers(state.players, players)
+    samePlayers(state.players, players) &&
+    sameResults(state.results, results)
   ) {
     return state;
   }
-  return { roomId, players, snippet: undefined, startsAt: undefined };
+  return { roomId, players, snippet: undefined, startsAt: undefined, results };
 }
 
 function applyProgress(state: RaceRoomState, message: ProgressFields): RaceRoomState {
@@ -247,7 +266,13 @@ function applyProgress(state: RaceRoomState, message: ProgressFields): RaceRoomS
         }
       : player,
   );
-  return { roomId: state.roomId, players, snippet: state.snippet, startsAt: state.startsAt };
+  return {
+    roomId: state.roomId,
+    players,
+    snippet: state.snippet,
+    startsAt: state.startsAt,
+    results: state.results,
+  };
 }
 
 interface ProgressFields {
@@ -288,6 +313,31 @@ function samePlayers(
   }
   for (let index = 0; index < left.length; index += 1) {
     if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function sameResults(
+  left: readonly RaceResultEntry[] | undefined,
+  right: readonly RaceResultEntry[],
+): boolean {
+  if (left === undefined || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    const current = left[index];
+    const next = right[index];
+    if (
+      current === undefined ||
+      next === undefined ||
+      current.playerId !== next.playerId ||
+      current.name !== next.name ||
+      current.place !== next.place ||
+      current.timeMs !== next.timeMs ||
+      current.wpm !== next.wpm
+    ) {
       return false;
     }
   }
