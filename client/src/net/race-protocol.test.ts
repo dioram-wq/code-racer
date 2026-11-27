@@ -341,6 +341,7 @@ describe("applyServerRoomMessage", () => {
     expect(applyServerRoomMessage(idle, raw)).toBe(idle);
 
     const again = applyServerRoomMessage(idle, raceStartFrame());
+    expect(again.results).toBeUndefined();
     expect(again.snippet).toEqual(snippet);
     expect(again.startsAt).toBe(startsAt);
     expect(again.players).toEqual([
@@ -401,12 +402,45 @@ describe("applyServerRoomMessage", () => {
       moved,
       JSON.stringify({ type: "race-results", roomId: "AB12", results: [] }),
     );
+    expect(empty.results).toEqual([]);
     expect(empty.snippet).toBeUndefined();
     expect(empty.startsAt).toBeUndefined();
     expect(empty.players).toEqual([
       { id: "ada", name: "Ada", position: 0, finished: false },
       { id: "bea", name: "Bea", position: 0, finished: false },
     ]);
+  });
+
+  it("keeps the finishing order until the next race or another room", () => {
+    const places = [
+      { playerId: "bea", name: "Bea", place: 1, timeMs: 12_000, wpm: 40.5 },
+      { playerId: "ada", name: "Ada", place: 2, timeMs: 18_000, wpm: 26.4 },
+    ];
+    const idle = applyServerRoomMessage(
+      racing(),
+      JSON.stringify({ type: "race-results", roomId: "AB12", results: places }),
+    );
+
+    expect(applyServerRoomMessage(idle, raceStartFrame("CD34"))).toBe(idle);
+
+    const stayed = applyServerRoomMessage(idle, playersFrame([{ id: "ada", name: "Augusta" }]));
+    expect(stayed.results).toBe(idle.results);
+    expect(stayed.players).toEqual([{ id: "ada", name: "Augusta", position: 0, finished: false }]);
+
+    const reported = applyServerRoomMessage(stayed, progressFrame("ada", 1, false));
+    expect(reported.results).toBe(idle.results);
+    expect(reported.players).toEqual([{ id: "ada", name: "Augusta", position: 1, finished: false }]);
+
+    const restarted = applyServerRoomMessage(idle, raceStartFrame());
+    expect(restarted.results).toBeUndefined();
+    expect(restarted.snippet).toEqual(snippet);
+    expect(restarted.startsAt).toBe(startsAt);
+
+    const moved = applyServerRoomMessage(idle, playersFrame([{ id: "cy", name: "Cy" }], "CD34"));
+    expect(moved.results).toBeUndefined();
+    expect(moved.roomId).toBe("CD34");
+    expect(moved.snippet).toBeUndefined();
+    expect(moved.startsAt).toBeUndefined();
   });
 
   it("keeps a race that arrives before the roster", () => {
